@@ -1,4 +1,6 @@
-# Vigil
+# Vigil — Skien Monitoring
+
+> *Vigil* is the code name used in binaries and paths (`vigil-hub`, `vigil-agent`, `/etc/vigil`). The product name shown to users defaults to **Skien Monitoring** and can be changed in **Settings → General** (or set `VIGIL_BRAND_NAME` before first start).
 
 Lightweight monitoring and operations for Linux and Windows servers: a **central hub** (one Docker container) plus a **tiny Rust agent** on each server.
 It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Portainer, without putting any of them on production machines.
@@ -30,6 +32,7 @@ It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Port
 * Agents push a metrics sample every 10 s. Everything else (container lists, logs, terminal, IIS, cleanup) is fetched on demand, so idle agents use very little CPU or memory.
 * The hub stores raw samples for 3 days and 5-minute rollups for 90 days (configurable).
 * The hub monitors its own host by running the same agent code in-process.
+* Measured footprint: agent ≈ **7–8 MB RAM**, 2 threads, near-zero idle CPU; hub container ≈ 25 MB idle (≈ 110 MB right after a heavy test run); image 178 MB.
 
 ## Quick start (hub)
 
@@ -166,6 +169,7 @@ Safeguards: you can't delete, disable or demote the last administrator. Every st
 | `VIGIL_RETENTION_RAW_DAYS` / `VIGIL_RETENTION_DAYS` | `3` / `90` | metrics retention |
 | `VIGIL_SESSION_IDLE_HOURS` | `12` | session idle timeout |
 | `VIGIL_TRUST_PROXY`, `VIGIL_SECURE_COOKIES` | `false` | reverse-proxy deployments |
+| `VIGIL_BRAND_NAME` | `Skien Monitoring` | product name until changed in Settings → General |
 | `VIGIL_LOG` | `info` | log filter, e.g. `debug,tower_http=info` |
 
 Back up the `vigil-data` volume (`vigil.db` and `tls/`). If you lose `tls/`, every agent must be re-enrolled, because they pin the old certificate.
@@ -205,7 +209,7 @@ pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 92 checks. It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 97 checks. It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 

@@ -343,11 +343,23 @@ def main():
         code, d = admin.get("/alerts?state=all")
         check("alerts list", code == 200 and isinstance(d, list), (code, d))
 
+        # ------------------------------------------------------------ branding
+        section("Branding")
+        code, d = Client(hub).get("/branding")
+        check("product name is public (sign-in page)", code == 200 and d.get("name"), (code, d))
+        original = d.get("name")
+        code, d = admin.req("PUT", "/branding", {"name": "x" * 41})
+        check("overlong product name rejected", code == 400, (code, d))
+        code, d = admin.req("PUT", "/branding", {"name": f"{tag} Monitoring"})
+        check("admin can rename the product", code == 200 and Client(hub).get("/branding")[1]["name"] == f"{tag} Monitoring", (code, d))
+        code, d = admin.req("PUT", "/branding", {"name": original})
+        check("product name restored", code == 200 and Client(hub).get("/branding")[1]["name"] == original, (code, d))
+
         # ------------------------------------------------------------ audit
         section("Audit")
         code, d = admin.get("/audit?limit=200")
         actions = {e["action"] for e in d} if code == 200 else set()
-        for need in ["login", "login_failed", "container_exec", "docker_container_remove", "docker_prune", "user_created", "server_added", "channel_created"]:
+        for need in ["login", "login_failed", "container_exec", "docker_container_remove", "docker_prune", "user_created", "server_added", "channel_created", "branding_updated"]:
             check(f"audit contains {need}", need in actions, sorted(actions))
     finally:
         section("Cleanup")
