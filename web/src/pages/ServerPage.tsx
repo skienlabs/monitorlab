@@ -11,6 +11,7 @@ import { bytes, dateTime, duration, pct, rate, ratio } from "../format";
 import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from "./DockerTabs";
 import { MssqlTab } from "./MssqlTab";
 import { IisTab } from "./IisTab";
+import { Alert, AlertsTable } from "./AlertsPage";
 
 type Range = "15m" | "1h" | "6h" | "24h" | "7d" | "30d";
 const RANGES: Range[] = ["15m", "1h", "6h", "24h", "7d", "30d"];
@@ -89,7 +90,7 @@ function OverviewTab({ s }: { s: Server }) {
             <Activity size={16} /> Uptime
           </div>
           <div className="value">{duration(m?.uptime)}</div>
-          <div className="foot">{m?.process_count} processes · since {h ? dateTime(h.boot_time * 1000) : "—"}</div>
+          <div className="foot">{m ? `${m.process_count} processes · ` : ""}since {h ? dateTime(h.boot_time * 1000) : "—"}</div>
         </div>
       </div>
 
@@ -163,11 +164,10 @@ function OverviewTab({ s }: { s: Server }) {
                 <div key={d.device + d.mount} className="col" style={{ gap: 6 }}>
                   <div className="row small">
                     <b className="mono" style={{ fontSize: 13 }}>{d.mount}</b>
-                    <span className="faint ellipsis">
+                    <span className="faint ellipsis grow" title={`${d.device} · ${d.fs}`}>
                       {d.device} · {d.fs}
                     </span>
-                    <span className="spacer" />
-                    <span className="tnum">
+                    <span className="tnum nowrap">
                       {bytes(d.used)} / {bytes(d.total)}
                     </span>
                     <b className="tnum" style={{ width: 44, textAlign: "right" }}>{pct(p)}</b>
@@ -218,7 +218,25 @@ function OverviewTab({ s }: { s: Server }) {
         </div>
       </div>
 
+      <ServerAlerts id={s.id} />
       <ProcessesCard id={s.id} online={s.online} />
+    </div>
+  );
+}
+
+function ServerAlerts({ id }: { id: string }) {
+  const [view, setView] = useState<"active" | "all">("active");
+  const { data } = usePoll(() => api<Alert[]>(`/alerts?state=${view}&server=${encodeURIComponent(id)}&limit=20`), [id, view], 20_000);
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3 className="grow">Alerts</h3>
+        <Seg value={view} onChange={setView} options={[{ value: "active", label: "Active" }, { value: "all", label: "Recent" }]} />
+        <Link to="/alerts" className="btn sm">All alerts</Link>
+      </div>
+      <div className="card-body">
+        {!data ? null : data.length === 0 ? <div className="small muted">{view === "active" ? "No active alerts." : "No alerts recorded."}</div> : <AlertsTable rows={data} showServer={false} />}
+      </div>
     </div>
   );
 }
@@ -315,7 +333,7 @@ export function ServerPage() {
             <ChevronRight size={14} />
             <span>{s.name}</span>
           </div>
-          <div className="row" style={{ gap: 14 }}>
+          <div className="row wrap" style={{ gap: 14 }}>
             <div className="os" style={{ width: 44, height: 44, borderRadius: 14, background: "var(--surface-2)", display: "grid", placeItems: "center", color: "var(--text-2)" }}>
               <OsIcon os={s.hello?.os} size={22} />
             </div>

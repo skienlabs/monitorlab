@@ -90,6 +90,32 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX audit_ts ON audit(ts);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     "#,
+    // v2: alerting
+    r#"
+    CREATE TABLE alerts (
+        id INTEGER PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        rule TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        message TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        resolved_at INTEGER NULL,
+        acked_by TEXT NULL,
+        acked_at INTEGER NULL
+    );
+    CREATE INDEX alerts_open ON alerts(agent_id, resolved_at);
+    CREATE TABLE channels (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        url TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        min_severity TEXT NOT NULL DEFAULT 'warning',
+        last_error TEXT NULL,
+        last_sent_at INTEGER NULL,
+        created_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 impl Db {

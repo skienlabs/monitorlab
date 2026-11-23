@@ -17,6 +17,7 @@ pub const IIS_CONTROL: &str = "iis.control";
 pub const SERVERS_MANAGE: &str = "servers.manage";
 pub const USERS_MANAGE: &str = "users.manage";
 pub const AUDIT_VIEW: &str = "audit.view";
+pub const ALERTS_MANAGE: &str = "alerts.manage";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PermInfo {
@@ -38,6 +39,7 @@ pub const CATALOG: &[PermInfo] = &[
     PermInfo { key: CONTAINERS_EXEC, group: "Operations", label: "Container terminal", description: "Open an interactive shell inside containers", dangerous: true },
     PermInfo { key: CONTAINERS_DELETE, group: "Destructive", label: "Delete containers", description: "Remove containers", dangerous: true },
     PermInfo { key: DOCKER_CLEANUP, group: "Destructive", label: "Docker cleanup", description: "Delete images, volumes, networks; prune build cache", dangerous: true },
+    PermInfo { key: ALERTS_MANAGE, group: "Operations", label: "Manage alerts", description: "Edit alert thresholds and notification channels, acknowledge alerts", dangerous: false },
     PermInfo { key: SERVERS_MANAGE, group: "Administration", label: "Manage servers", description: "Add, rename and remove servers / agents", dangerous: true },
     PermInfo { key: USERS_MANAGE, group: "Administration", label: "Manage users & roles", description: "Create users, assign roles and server access", dangerous: true },
     PermInfo { key: AUDIT_VIEW, group: "Administration", label: "View audit log", description: "See who did what and when", dangerous: false },
@@ -58,7 +60,7 @@ pub fn builtin_roles() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             "Operator",
             "View everything, read logs, control containers and IIS, open terminals. Cannot delete.",
-            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, CONTAINERS_EXEC],
+            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, CONTAINERS_EXEC, ALERTS_MANAGE],
         ),
         (
             "Tester",

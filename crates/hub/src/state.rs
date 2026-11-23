@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -19,6 +19,9 @@ pub struct AppState {
     pub reg: Registry,
     pub tls: Option<TlsInfo>,
     pub throttle: Throttle,
+    pub rules: RwLock<crate::alerts::AlertRules>,
+    /// Product name shown in the UI and notifications (editable by administrators).
+    pub brand: RwLock<String>,
 }
 
 pub type S = Arc<AppState>;
@@ -36,6 +39,10 @@ impl AppState {
             }
         }
         addr.ip().to_string()
+    }
+
+    pub fn brand(&self) -> String {
+        self.brand.read().unwrap().clone()
     }
 
     pub fn secure_cookies(&self) -> bool {

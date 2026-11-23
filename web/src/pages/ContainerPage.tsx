@@ -275,14 +275,14 @@ export function ContainerPage() {
             <ChevronRight size={14} />
             <span>{name}</span>
           </div>
-          <div className="row" style={{ gap: 14 }}>
-            <h1>{name}</h1>
+          <div className="row wrap" style={{ gap: 14 }}>
+            <h1 style={{ overflowWrap: "anywhere" }}>{name}</h1>
             <StateChip state={state} health={d.State?.Health?.Status} />
           </div>
-          <div className="sub small mono">{d.Config?.Image}</div>
+          <div className="sub small mono" style={{ overflowWrap: "anywhere" }}>{d.Config?.Image}</div>
         </div>
         {can("containers.control") && (
-          <div className="row">
+          <div className="row wrap">
             {running ? (
               <button className="btn outlined" onClick={() => actions.stop(c)}><CircleStop size={17} /> Stop</button>
             ) : (

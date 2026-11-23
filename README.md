@@ -7,7 +7,7 @@ It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Port
 |---|---|
 | **Linux servers** | CPU / memory / swap / load / disks / network / disk I/O · Docker containers (grouped by compose stack), live logs, terminal, live stats, start/stop/restart/pause/kill/delete · images, volumes, networks · `docker system df` with one-click cleanup (dangling/unused images, stopped containers, unused volumes, networks, build cache) · SQL Server on Linux (service state, CPU/RAM, error log) |
 | **Windows servers** | System metrics · IIS sites, bindings, app pools and worker processes (start/stop/restart site, recycle pool) · live W3C logs per site · SQL Server instances (service state, CPU/RAM, version, live ERRORLOG) |
-| **Hub** | Web console, history charts (15 min → 30 days), users, roles and per-server access, audit log, agent enrollment, TLS with certificate pinning |
+| **Hub** | Web console, history charts (15 min → 30 days), alerting (email, Teams, Slack, webhooks), users, roles and per-server access, audit log, agent enrollment, TLS with certificate pinning |
 
 ## Architecture
 
@@ -87,6 +87,31 @@ password = "…"
 trust_cert = true
 ```
 
+## Alerting
+
+The hub evaluates rules every 30 seconds for every server:
+
+| Rule | Default | Severity |
+|---|---|---|
+| CPU sustained | warning ≥ 85 %, critical ≥ 95 % **for 5 minutes** | warning / critical |
+| Memory sustained | warning ≥ 90 %, critical ≥ 95 % for 5 minutes | warning / critical |
+| Disk (each volume) | warning ≥ 85 %, critical ≥ 95 % | warning / critical |
+| Agent offline | no contact for 2 minutes | critical |
+| Docker containers unhealthy / restart-looping | on | warning |
+| SQL Server instance stopped | on | critical |
+| IIS site or application pool stopped | on | warning |
+
+"Sustained" means the *minimum* over the whole window is above the threshold, so short spikes never page anyone. Alerts are stored with full history. Notifications go out when an alert fires, escalates or resolves, and an operator can acknowledge an alert in the UI.
+
+**Channels** (Alert settings → Notification channels):
+
+* **Email** through your own mail server. Set the SMTP server once (host, port, STARTTLS/TLS, login, sender), then add email channels with any recipient lists. Example for your own domain: host `mail.skiensoftwarelab.com`, port 587 STARTTLS, user and from `alerts@skiensoftwarelab.com`. Tick "accept self-signed certificates" if the mail server uses an internal CA.
+* **Microsoft Teams**: a Workflows webhook ("Post to a channel when a webhook request is received"). Messages arrive as Adaptive Cards with an "Open in Vigil" button.
+* **Slack**, Google Chat or Mattermost incoming webhooks.
+* **Generic webhook**: a JSON POST (`event`, `severity`, `server`, `rule`, `message`, `started_at`, `link`), useful for PagerDuty or Opsgenie bridges and your own scripts.
+
+Each channel can receive everything or critical alerts only, and has a **Test** button. Set `VIGIL_PUBLIC_URL` so notifications link back to the right server page.
+
 ## Users, roles and access
 
 Permissions (each agent request maps to exactly one, enforced on the hub):
@@ -101,6 +126,7 @@ Permissions (each agent request maps to exactly one, enforced on the hub):
 | `containers.exec` | interactive terminal inside containers (audited) |
 | `containers.delete` | delete containers |
 | `docker.cleanup` | delete images / volumes / networks, prune, clear build cache |
+| `alerts.manage` | alert thresholds, SMTP, notification channels, acknowledge alerts |
 | `servers.manage` · `users.manage` · `audit.view` | administration |
 
 Built-in roles: **Administrator** (everything, immutable), **Operator** (everything except deletes and administration), **Tester** (view + logs + restart; no terminal, no deletes), **Viewer** (read-only). You can create custom roles, and restrict any user to selected servers.
@@ -165,6 +191,22 @@ enabled = true
 # enabled = true          # default: auto-detect (Windows)
 ```
 
+## Testing
+
+```bash
+cargo test --workspace                      # unit tests (protocol, parsers, log tailing, TLS, alert rules)
+
+# end-to-end regression suite against a running hub (uses Docker on this machine)
+pip install requests websockets
+python3 tests/e2e.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --agent-bin ./vigil-agent
+
+# browser walk-through of every page (screenshots + fails on console errors)
+pip install playwright && python -m playwright install chromium
+python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
+```
+
+The e2e suite has 92 checks. It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+
 ## Development
 
 ```bash
@@ -200,4 +242,4 @@ Adding a capability (Kubernetes, PostgreSQL, alerts, …) follows one pattern:
 
 ## Roadmap ideas
 
-Kubernetes (pods, deployments, events, pod logs/exec) · alert rules with email/Teams/Slack webhooks · Windows services and Event Log · multi-container merged log view · SSO (OIDC) · hub on Windows.
+Kubernetes (pods, deployments, events, pod logs/exec) · per-server alert overrides and maintenance windows · Windows services and Event Log · multi-container merged log view · SSO (OIDC) · hub on Windows.

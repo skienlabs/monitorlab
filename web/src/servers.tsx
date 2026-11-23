@@ -17,3 +17,9 @@ export function ServersProvider({ children }: { children: ReactNode }) {
   const { data, error, reload } = usePoll(() => api<Server[]>("/servers"), [], 10_000);
   return <C.Provider value={{ servers: data, error, reload }}>{children}</C.Provider>;
 }
+
+/** Number of active alerts visible to the user, refreshed every 20s. */
+export function useAlertCount() {
+  const { data } = usePoll(() => api<unknown[]>("/alerts?state=active").catch(() => []), [], 20_000);
+  return data?.length ?? 0;
+}

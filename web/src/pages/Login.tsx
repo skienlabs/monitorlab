@@ -4,9 +4,11 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import type { Me } from "../types";
 import { Spinner } from "../components/ui";
+import { useBrand } from "../brand";
 
 export function Login() {
   const { setMe } = useAuth();
+  const { name: brand } = useBrand();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -34,7 +36,7 @@ export function Login() {
           <Activity size={26} />
         </div>
         <h1>Sign in</h1>
-        <div className="muted">to continue to Vigil</div>
+        <div className="muted">to continue to {brand}</div>
         <form onSubmit={submit}>
           <div className="field">
             <label htmlFor="email">Email</label>

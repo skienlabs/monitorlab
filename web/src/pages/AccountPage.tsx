@@ -8,7 +8,7 @@ export function AccountPage() {
   const { mode, setMode } = useTheme();
   if (!me) return null;
   return (
-    <div className="page" style={{ maxWidth: 880 }}>
+    <div className="page page-narrow">
       <div className="page-head">
         <div className="grow">
           <h1>Account</h1>

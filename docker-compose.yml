@@ -21,7 +21,7 @@ services:
     volumes:
       - vigil-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
-      - /:/host:ro,rslave
+      - /:/host:ro
 
 volumes:
   vigil-data:

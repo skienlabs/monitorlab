@@ -67,58 +67,15 @@ async fn load_agents(state: &S, only: Option<String>) -> ApiResult<Vec<AgentRow>
         .await?)
 }
 
-/// Health evaluation of the latest sample: (status, reasons).
-fn health(m: &MetricsSample) -> (&'static str, Vec<String>) {
-    let mut level = 0;
-    let mut reasons = Vec::new();
-    let mut flag = |lvl: i32, msg: String| {
-        level = level.max(lvl);
-        reasons.push(msg);
-    };
-    let pct = |u: u64, t: u64| if t > 0 { u as f64 * 100.0 / t as f64 } else { 0.0 };
-    if m.cpu >= 95.0 {
-        flag(2, format!("CPU at {:.0}%", m.cpu));
-    } else if m.cpu >= 85.0 {
-        flag(1, format!("CPU at {:.0}%", m.cpu));
-    }
-    let mem = pct(m.mem_used, m.mem_total);
-    if mem >= 95.0 {
-        flag(2, format!("Memory at {mem:.0}%"));
-    } else if mem >= 90.0 {
-        flag(1, format!("Memory at {mem:.0}%"));
-    }
-    for d in &m.disks {
-        let p = pct(d.used, d.total);
-        if p >= 95.0 {
-            flag(2, format!("Disk {} at {p:.0}%", d.mount));
-        } else if p >= 85.0 {
-            flag(1, format!("Disk {} at {p:.0}%", d.mount));
-        }
-    }
-    if let Some(d) = &m.docker {
-        if d.unhealthy > 0 {
-            flag(1, format!("{} unhealthy/restarting container(s)", d.unhealthy));
-        }
-    }
-    if let Some(s) = &m.mssql {
-        for i in &s.instances {
-            if i.state == "stopped" {
-                flag(2, format!("SQL Server {} is stopped", i.name));
-            }
-        }
-    }
-    if let Some(i) = &m.iis {
-        if i.pools_started < i.pools_total {
-            flag(1, format!("{} IIS app pool(s) stopped", i.pools_total - i.pools_started));
-        }
-        if i.sites_started < i.sites_total {
-            flag(1, format!("{} IIS site(s) stopped", i.sites_total - i.sites_started));
-        }
-    }
-    (["ok", "warning", "critical"][level as usize], reasons)
+/// Health of the latest sample using the configured alert thresholds (instant values).
+fn health(m: &MetricsSample, rules: &crate::alerts::AlertRules) -> (&'static str, Vec<String>) {
+    let issues = crate::alerts::evaluate(m, rules, Some(m.cpu as f64), Some(if m.mem_total > 0 { m.mem_used as f64 * 100.0 / m.mem_total as f64 } else { 0.0 }));
+    let crit = issues.iter().any(|i| i.1 == crate::alerts::Severity::Critical);
+    let reasons: Vec<String> = issues.into_iter().map(|i| i.2).collect();
+    (if crit { "critical" } else if reasons.is_empty() { "ok" } else { "warning" }, reasons)
 }
 
-fn server_json(row: &AgentRow, conn: Option<Arc<AgentConn>>, full: bool) -> Value {
+fn server_json(row: &AgentRow, conn: Option<Arc<AgentConn>>, full: bool, rules: &crate::alerts::AlertRules) -> Value {
     let online = conn.is_some();
     let hello = conn.as_ref().and_then(|c| c.hello.read().unwrap().clone()).or_else(|| row.hello.clone());
     let latest = conn.as_ref().and_then(|c| c.latest.read().unwrap().clone());
@@ -127,7 +84,7 @@ fn server_json(row: &AgentRow, conn: Option<Arc<AgentConn>>, full: bool) -> Valu
     } else if !online {
         ("offline", vec![])
     } else if let Some(m) = &latest {
-        let (s, r) = health(m);
+        let (s, r) = health(m, rules);
         (s, r)
     } else {
         ("ok", vec![])
@@ -167,17 +124,19 @@ async fn get_server_row(state: &S, user: &AuthUser, id: &str) -> ApiResult<Agent
 pub async fn list_servers(State(state): State<S>, user: AuthUser) -> ApiResult<Json<Value>> {
     user.require(rbac::SERVERS_VIEW)?;
     let rows = load_agents(&state, None).await?;
+    let rules = state.rules.read().unwrap().clone();
     let list: Vec<Value> = rows
         .iter()
         .filter(|r| user.can_server(&r.id))
-        .map(|r| server_json(r, state.reg.get(&r.id), false))
+        .map(|r| server_json(r, state.reg.get(&r.id), false, &rules))
         .collect();
     Ok(Json(Value::Array(list)))
 }
 
 pub async fn get_server(State(state): State<S>, user: AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let row = get_server_row(&state, &user, &id).await?;
-    Ok(Json(server_json(&row, state.reg.get(&id), true)))
+    let rules = state.rules.read().unwrap().clone();
+    Ok(Json(server_json(&row, state.reg.get(&id), true, &rules)))
 }
 
 #[derive(Deserialize)]
@@ -281,12 +240,14 @@ async fn browser_stream(state: S, user: AuthUser, row: AgentRow, conn: Arc<Agent
         Ok(r) => r,
         Err(e) => {
             send_json(&mut socket, json!({ "t": "end", "error": format!("bad request: {e}") })).await;
+            let _ = socket.close().await;
             return;
         }
     };
     let perm = rbac::for_stream(&req);
     if !user.has(perm) {
         send_json(&mut socket, json!({ "t": "end", "error": format!("Missing permission: {perm}") })).await;
+        let _ = socket.close().await;
         return;
     }
     let is_exec = matches!(req, StreamRequest::ContainerExec { .. });
@@ -301,6 +262,7 @@ async fn browser_stream(state: S, user: AuthUser, row: AgentRow, conn: Arc<Agent
         Ok(h) => h,
         Err(e) => {
             send_json(&mut socket, json!({ "t": "end", "error": e.to_string() })).await;
+            let _ = socket.close().await;
             return;
         }
     };
@@ -421,6 +383,7 @@ pub async fn delete_server(State(state): State<S>, user: AuthUser, Path(id): Pat
             let tx = c.transaction()?;
             tx.execute("DELETE FROM metrics WHERE agent_id = ?1", [&id2])?;
             tx.execute("DELETE FROM metrics_5m WHERE agent_id = ?1", [&id2])?;
+            tx.execute("DELETE FROM alerts WHERE agent_id = ?1", [&id2])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [&id2])?;
             tx.commit()?;
             Ok(())
@@ -888,4 +851,28 @@ pub async fn audit_log(State(state): State<S>, user: AuthUser, Query(q): Query<A
         })
         .await?;
     Ok(Json(v))
+}
+
+// =================================================================== branding
+
+/// Public: the login page needs the product name before anyone signs in.
+pub async fn get_branding(State(state): State<S>) -> Json<Value> {
+    Json(json!({ "name": state.brand() }))
+}
+
+#[derive(Deserialize)]
+pub struct BrandingBody {
+    name: String,
+}
+
+pub async fn put_branding(State(state): State<S>, user: AuthUser, Json(b): Json<BrandingBody>) -> ApiResult<Json<Value>> {
+    user.require(rbac::USERS_MANAGE)?;
+    let name = b.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 40 || name.chars().any(|c| c.is_control()) {
+        return Err(ApiError::bad("Name must be 1–40 characters"));
+    }
+    state.db.set_setting("brand_name", name.clone()).await?;
+    let old = std::mem::replace(&mut *state.brand.write().unwrap(), name.clone());
+    audit(&state, Some(&user), "", AuditEntry { action: "branding_updated", server: None, target: Some(name), detail: Some(format!("was: {old}")), ok: true }).await;
+    Ok(Json(json!({ "ok": true })))
 }

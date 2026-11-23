@@ -1,4 +1,5 @@
 mod agent_ws;
+mod alerts;
 mod api;
 mod auth;
 mod config;
@@ -19,7 +20,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use clap::Parser;
 use rusqlite::{params, OptionalExtension};
@@ -114,10 +115,19 @@ fn router(state: S) -> Router {
         .route("/roles/{id}", patch(api::update_role).delete(api::delete_role))
         .route("/permissions", get(api::permissions))
         .route("/audit", get(api::audit_log))
+        .route("/alerts", get(alerts::list))
+        .route("/alerts/{id}/ack", post(alerts::ack))
+        .route("/alert-rules", get(alerts::get_rules).put(alerts::put_rules))
+        .route("/alert-channels", get(alerts::list_channels).post(alerts::create_channel))
+        .route("/alert-channels/{id}", put(alerts::update_channel).delete(alerts::delete_channel))
+        .route("/alert-channels/{id}/test", post(alerts::test_channel))
+        .route("/smtp", get(alerts::get_smtp).put(alerts::put_smtp))
+        .route("/smtp/test", post(alerts::test_smtp))
         .route("/hub/info", get(api::hub_info))
         .route("/agent/connect", get(agent_ws::connect))
         .route("/agent/enroll", get(agent_ws::enroll))
         .route("/health", get(|| async { Json(json!({ "ok": true })) }))
+        .route("/branding", get(api::get_branding).put(api::put_branding))
         .fallback(api_not_found)
         .layer(middleware::from_fn_with_state(state.clone(), csrf_guard));
 
@@ -209,6 +219,8 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = HubConfig::parse();
+    // One process-wide TLS crypto provider (ring) for every rustls user: hub TLS, webhooks, SMTP.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("VIGIL_LOG")
@@ -221,12 +233,25 @@ async fn main() -> Result<()> {
     bootstrap(&db, &cfg).await?;
     let tls = tls::load(&cfg)?;
 
-    let state: S = Arc::new(AppState { cfg: cfg.clone(), db: db.clone(), reg: Registry::default(), tls: tls.clone(), throttle: Throttle::default() });
+    let state: S = Arc::new(AppState {
+        cfg: cfg.clone(),
+        db: db.clone(),
+        reg: Registry::default(),
+        tls: tls.clone(),
+        throttle: Throttle::default(),
+        rules: std::sync::RwLock::new(Default::default()),
+        brand: std::sync::RwLock::new(cfg.brand_name.clone()),
+    });
+    if let Some(name) = db.get_setting("brand_name").await?.filter(|n| !n.trim().is_empty()) {
+        *state.brand.write().unwrap() = name;
+    }
+    *state.rules.write().unwrap() = alerts::load_rules(&state).await;
 
     // Warm the constant-time dummy hash so the first failed login is not faster.
     tokio::task::spawn_blocking(auth::dummy_hash);
 
     tokio::spawn(metrics::maintenance_loop(db.clone(), cfg.retention_raw_days, cfg.retention_days));
+    tokio::spawn(alerts::evaluator_loop(state.clone()));
     if cfg.local_agent {
         agent_ws::start_local_agent(state.clone()).await?;
     }

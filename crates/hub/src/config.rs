@@ -52,6 +52,10 @@ pub struct HubConfig {
     #[arg(long, env = "VIGIL_AGENTS_DIR", default_value = "/opt/vigil/agents")]
     pub agents_dir: PathBuf,
 
+    /// Product name used until an administrator changes it in Settings → General.
+    #[arg(long, env = "VIGIL_BRAND_NAME", default_value = "Skien Monitoring")]
+    pub brand_name: String,
+
     #[arg(long, env = "VIGIL_ADMIN_EMAIL", default_value = "admin@vigil.local")]
     pub admin_email: String,
 

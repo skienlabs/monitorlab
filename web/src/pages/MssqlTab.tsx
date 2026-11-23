@@ -123,7 +123,7 @@ export function MssqlTab({ s }: { s: Server }) {
       {!data.query_configured && (
         <details className="card card-pad">
           <summary style={{ cursor: "pointer", fontWeight: 500 }}>Show databases, sessions and memory counters</summary>
-          <p className="small muted">Optionally give the agent a read-only login. Without it, Vigil still shows service state, CPU, memory and the error log.</p>
+          <p className="small muted">Optionally give the agent a read-only login. Without it, the agent still reports service state, CPU, memory and the error log.</p>
           <CodeBlock>{CONFIG_SNIPPET}</CodeBlock>
         </details>
       )}

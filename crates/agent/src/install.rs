@@ -143,8 +143,16 @@ pub fn uninstall(purge: bool) -> Result<()> {
     let _ = std::fs::remove_file(UNIT_PATH);
     let _ = run("systemctl", &["daemon-reload"]);
     if purge {
-        let _ = std::fs::remove_file(default_config_path());
-        let _ = run("userdel", &[SERVICE_USER]);
+        let cfg = default_config_path();
+        let _ = std::fs::remove_file(&cfg);
+        if let Some(dir) = cfg.parent() {
+            let _ = std::fs::remove_dir(dir); // only succeeds when empty
+        }
+        match run("userdel", &[SERVICE_USER]) {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => eprintln!("warning: could not remove user '{SERVICE_USER}': {}", String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => eprintln!("warning: could not remove user '{SERVICE_USER}': {e}"),
+        }
         let _ = std::fs::remove_file(BIN_PATH);
     }
     println!("vigil-agent service removed{}.", if purge { " (config, user and binary purged)" } else { "" });

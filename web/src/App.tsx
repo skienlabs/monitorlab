@@ -1,7 +1,9 @@
-import { ReactNode } from "react";
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes } from "react-router-dom";
-import { Activity, KeyRound, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, SunMoon, UserRound, Users } from "lucide-react";
+import { ReactNode, useEffect, useState } from "react";
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Activity, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, SunMoon, UserRound, Users } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
+import { BrandProvider, useBrand } from "./brand";
+import { GeneralSettings } from "./pages/GeneralSettings";
 import { ThemeProvider, useTheme } from "./theme";
 import { ServersProvider, useServers } from "./servers";
 import { ConfirmProvider, Loading, Menu, ToastProvider } from "./components/ui";
@@ -14,6 +16,9 @@ import { AdminUsers } from "./pages/AdminUsers";
 import { AdminRoles } from "./pages/AdminRoles";
 import { AuditPage } from "./pages/AuditPage";
 import { AccountPage } from "./pages/AccountPage";
+import { AlertsPage } from "./pages/AlertsPage";
+import { AlertSettings } from "./pages/AlertSettings";
+import { useAlertCount } from "./servers";
 
 function ThemeToggle() {
   const { mode, setMode } = useTheme();
@@ -48,15 +53,20 @@ function UserMenu() {
   );
 }
 
-function Nav() {
+function Nav({ open }: { open: boolean }) {
   const { can } = useAuth();
   const { servers } = useServers();
   const online = servers?.filter((s) => s.online).length ?? 0;
+  const alertCount = useAlertCount();
   return (
-    <nav className="nav" aria-label="Main">
+    <nav className={`nav ${open ? "open" : ""}`} aria-label="Main">
       <NavLink to="/" end>
         <LayoutGrid size={20} /> Overview
         {servers && <span className="count">{online}/{servers.length}</span>}
+      </NavLink>
+      <NavLink to="/alerts">
+        <Bell size={20} /> Alerts
+        {alertCount > 0 && <span className="count" style={{ color: "var(--crit-text)", fontWeight: 600 }}>{alertCount}</span>}
       </NavLink>
       {servers && servers.length > 0 && <div className="nav-section">Servers</div>}
       {servers?.map((s) => (
@@ -65,7 +75,12 @@ function Nav() {
           <span className="ellipsis">{s.name}</span>
         </NavLink>
       ))}
-      {(can("servers.manage") || can("users.manage") || can("audit.view")) && <div className="nav-section">Administration</div>}
+      {(can("servers.manage") || can("users.manage") || can("audit.view") || can("alerts.manage")) && <div className="nav-section">Administration</div>}
+      {can("alerts.manage") && (
+        <NavLink to="/admin/alerts">
+          <BellRing size={20} /> Alert settings
+        </NavLink>
+      )}
       {can("servers.manage") && (
         <NavLink to="/admin/servers">
           <ServerIcon size={20} /> Servers & agents
@@ -73,6 +88,9 @@ function Nav() {
       )}
       {can("users.manage") && (
         <>
+          <NavLink to="/admin/general">
+            <SlidersHorizontal size={20} /> General
+          </NavLink>
           <NavLink to="/admin/users">
             <Users size={20} /> Users
           </NavLink>
@@ -95,20 +113,28 @@ function Nav() {
 }
 
 function Shell({ children }: { children: ReactNode }) {
+  const { name } = useBrand();
+  const [navOpen, setNavOpen] = useState(false);
+  const loc = useLocation();
+  useEffect(() => setNavOpen(false), [loc.pathname, loc.search]);
   return (
     <div className="shell">
       <header className="topbar">
+        <button className="icon-btn nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu" aria-expanded={navOpen}>
+          <MenuIcon size={20} />
+        </button>
         <Link to="/" className="brand">
           <span className="brand-mark">
             <Activity size={19} />
           </span>
-          Vigil
+          <span className="ellipsis">{name}</span>
         </Link>
         <div className="spacer" />
         <ThemeToggle />
         <UserMenu />
       </header>
-      <Nav />
+      <Nav open={navOpen} />
+      {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} />}
       <main className="main">{children}</main>
     </div>
   );
@@ -133,7 +159,8 @@ function Guard({ perm, children }: { perm: string; children: ReactNode }) {
 
 function Routed() {
   const { me, loading } = useAuth();
-  if (loading) return <Loading label="Starting Vigil…" />;
+  const { name } = useBrand();
+  if (loading) return <Loading label={`Starting ${name}…`} />;
   if (!me) return <Login />;
   if (me.must_change_password) return <ForcedPassword />;
   return (
@@ -144,9 +171,12 @@ function Routed() {
           <Route path="/servers/:id" element={<ServerPage />} />
           <Route path="/servers/:id/containers/:cid" element={<ContainerPage />} />
           <Route path="/admin/servers" element={<Guard perm="servers.manage"><AdminServers /></Guard>} />
+          <Route path="/admin/general" element={<Guard perm="users.manage"><GeneralSettings /></Guard>} />
           <Route path="/admin/users" element={<Guard perm="users.manage"><AdminUsers /></Guard>} />
           <Route path="/admin/roles" element={<Guard perm="users.manage"><AdminRoles /></Guard>} />
           <Route path="/admin/audit" element={<Guard perm="audit.view"><AuditPage /></Guard>} />
+          <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/admin/alerts" element={<Guard perm="alerts.manage"><AlertSettings /></Guard>} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -158,6 +188,7 @@ function Routed() {
 export default function App() {
   return (
     <ThemeProvider>
+      <BrandProvider>
       <ToastProvider>
         <ConfirmProvider>
           <AuthProvider>
@@ -167,6 +198,7 @@ export default function App() {
           </AuthProvider>
         </ConfirmProvider>
       </ToastProvider>
+      </BrandProvider>
     </ThemeProvider>
   );
 }

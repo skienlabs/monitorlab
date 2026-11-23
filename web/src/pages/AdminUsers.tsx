@@ -192,7 +192,7 @@ export function AdminUsers() {
       <div className="page-head">
         <div className="grow">
           <h1>Users</h1>
-          <div className="sub">People who can sign in to Vigil, their role and which servers they can see</div>
+          <div className="sub">People who can sign in, their role and which servers they can see</div>
         </div>
         <button className="btn filled" onClick={() => setEditing("new")}>
           <Plus size={18} /> Add user
