@@ -3,3 +3,4 @@
 /web/dist
 *.db
 sandbox-ca.crt
+/web/tsconfig.tsbuildinfo
