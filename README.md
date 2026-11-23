@@ -1,0 +1,203 @@
+# Vigil
+
+Lightweight monitoring and operations for Linux and Windows servers: a **central hub** (one Docker container) plus a **tiny Rust agent** on each server.
+It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Portainer, without putting any of them on production machines.
+
+| | |
+|---|---|
+| **Linux servers** | CPU / memory / swap / load / disks / network / disk I/O · Docker containers (grouped by compose stack), live logs, terminal, live stats, start/stop/restart/pause/kill/delete · images, volumes, networks · `docker system df` with one-click cleanup (dangling/unused images, stopped containers, unused volumes, networks, build cache) · SQL Server on Linux (service state, CPU/RAM, error log) |
+| **Windows servers** | System metrics · IIS sites, bindings, app pools and worker processes (start/stop/restart site, recycle pool) · live W3C logs per site · SQL Server instances (service state, CPU/RAM, version, live ERRORLOG) |
+| **Hub** | Web console, history charts (15 min → 30 days), users, roles and per-server access, audit log, agent enrollment, TLS with certificate pinning |
+
+## Architecture
+
+```
+            browser ──HTTPS──▶ ┌──────────────── hub (container) ────────────────┐
+                               │ web console · REST/WebSocket API · SQLite        │
+                               │ auth · RBAC · audit · metrics store · built-in   │
+                               │ agent for the hub host                           │
+                               └──────▲──────────────▲──────────────▲─────────────┘
+                     outbound WSS     │              │              │   (agents dial out;
+                     (pinned TLS)     │              │              │    no inbound ports)
+                               ┌──────┴─────┐ ┌──────┴─────┐ ┌──────┴──────┐
+                               │ agent      │ │ agent      │ │ agent       │
+                               │ Linux +    │ │ Linux +    │ │ Windows +   │
+                               │ Docker     │ │ SQL Server │ │ IIS + SQL   │
+                               └────────────┘ └────────────┘ └─────────────┘
+```
+
+* **Agents connect out** to the hub over one WebSocket. Production servers need no open ports, and the hub can sit in a test network as long as agents can reach it.
+* Agents push a metrics sample every 10 s. Everything else (container lists, logs, terminal, IIS, cleanup) is fetched on demand, so idle agents use very little CPU or memory.
+* The hub stores raw samples for 3 days and 5-minute rollups for 90 days (configurable).
+* The hub monitors its own host by running the same agent code in-process.
+
+## Quick start (hub)
+
+```bash
+docker build -t vigil-hub .          # builds UI, hub, Linux (static) and Windows agents
+# edit VIGIL_PUBLIC_URL / VIGIL_TLS_SANS in docker-compose.yml, then:
+docker compose up -d
+docker logs vigil                    # shows the generated admin password (once)
+```
+
+Open `https://<hub>:8443`, sign in, and set a new password. The hub generates a self-signed certificate on first start. Agents pin its SHA-256 fingerprint, so a self-signed certificate is safe for agent traffic. See [TLS](#tls) to use your own certificate.
+
+> Behind a registry mirror: `docker build --build-arg REGISTRY=mirror.gcr.io/library -t vigil-hub .`
+
+## Adding servers
+
+In the console, go to **Servers & agents → Add server** and give the server a name. You get a one-time install command (valid for 24 h):
+
+**Linux** (systemd; x86_64; static binary, works on any distro):
+
+```bash
+curl -fsSL -k --pinnedpubkey 'sha256//…' https://hub:8443/download/install.sh | sudo sh -s -- \
+  --hub https://hub:8443 --token <token> --fingerprint <AA:BB:…> --pin 'sha256//…'
+```
+
+The installer creates a `vigil` system user (in the `docker` and `mssql` groups if they exist), writes `/etc/vigil/agent.toml` (mode 0600), and starts `vigil-agent.service`, capped at 256 MB of RAM by systemd.
+
+**Windows Server 2016–2025**: download `vigil-agent-windows-amd64.exe` from the dialog, then in an elevated PowerShell:
+
+```powershell
+.\vigil-agent-windows-amd64.exe install --hub https://hub:8443 --token <token> --fingerprint <AA:BB:…>
+```
+
+This installs the `VigilAgent` service (LocalSystem, automatic start, restart on failure). The config goes to `C:\ProgramData\Vigil\agent.toml`, with ACLs restricted to SYSTEM and Administrators, and the log to `C:\ProgramData\Vigil\agent.log`.
+
+To uninstall an agent: `vigil-agent uninstall --purge` (Linux, with sudo) or `vigil-agent.exe uninstall --purge` (Windows, admin).
+
+### Optional: SQL Server DMV data
+
+Without credentials the agent shows service state, CPU/RAM, version and the error log. For databases, sizes, sessions and page life expectancy, add a read-only login:
+
+```sql
+CREATE LOGIN vigil_monitor WITH PASSWORD = '…';
+GRANT VIEW SERVER STATE TO vigil_monitor;
+GRANT VIEW ANY DEFINITION TO vigil_monitor;
+```
+
+```toml
+# agent.toml
+[mssql.connection]
+host = "127.0.0.1"
+port = 1433
+user = "vigil_monitor"
+password = "…"
+trust_cert = true
+```
+
+## Users, roles and access
+
+Permissions (each agent request maps to exactly one, enforced on the hub):
+
+| Permission | Grants |
+|---|---|
+| `servers.view` | dashboards, metrics, charts, processes |
+| `docker.view` · `mssql.view` · `iis.view` | read-only views of those subsystems |
+| `logs.view` | container, IIS and SQL Server logs |
+| `containers.control` | start / stop / restart / pause / kill |
+| `iis.control` | start / stop sites, recycle / start / stop app pools |
+| `containers.exec` | interactive terminal inside containers (audited) |
+| `containers.delete` | delete containers |
+| `docker.cleanup` | delete images / volumes / networks, prune, clear build cache |
+| `servers.manage` · `users.manage` · `audit.view` | administration |
+
+Built-in roles: **Administrator** (everything, immutable), **Operator** (everything except deletes and administration), **Tester** (view + logs + restart; no terminal, no deletes), **Viewer** (read-only). You can create custom roles, and restrict any user to selected servers.
+
+Safeguards: you can't delete, disable or demote the last administrator. Every state-changing action, terminal session, sign-in and failed sign-in is written to the audit log, which is kept for one year.
+
+## Security model
+
+* Passwords are hashed with Argon2id; minimum 10 characters. New users and password resets force a change at the next sign-in.
+* Sessions are opaque random tokens stored hashed on the server, in an `HttpOnly; SameSite=Strict` cookie (`Secure` over TLS). They expire after 12 h idle (configurable) and 7 days at most. Changing a password signs out the user's other sessions.
+* Login throttling: per account (5 failures → 5 min lock) and per IP (20 → 15 min).
+* CSRF: state-changing requests require the `X-Vigil-Csrf` header plus a same-origin `Origin`. Browser WebSockets require a same-origin `Origin` to block cross-site WebSocket hijacking.
+* Security headers: strict CSP (no inline scripts), `frame-ancestors 'none'`, nosniff, and `no-referrer`.
+* Agent credentials: one-time enrollment token, then a 256-bit secret stored hashed on the hub. Removing a server revokes it immediately. Agents pin the hub certificate by SHA-256.
+* Agents never accept file paths or shell strings from the hub. Logs are addressed by logical ids (container, IIS site id, SQL instance) and resolved by the agent. IIS actions are validated against the live site and pool list, and run without a shell.
+* Container environment variables are masked in the UI until you reveal them.
+
+## TLS
+
+| `VIGIL_TLS` | Behaviour |
+|---|---|
+| `auto` (default) | self-signed cert in `/data/tls`, created on first start; agents pin its fingerprint |
+| `files` | use `VIGIL_TLS_CERT` / `VIGIL_TLS_KEY` (PEM); agents validate it against public CAs |
+| `off` | plain HTTP, for use behind a TLS-terminating reverse proxy; set `VIGIL_TRUST_PROXY=true`, `VIGIL_SECURE_COOKIES=true` and `VIGIL_PUBLIC_URL=https://…` |
+
+## Hub configuration (environment)
+
+| Variable | Default | |
+|---|---|---|
+| `VIGIL_LISTEN` | `0.0.0.0:8443` | listen address |
+| `VIGIL_DATA_DIR` | `/data` | database, TLS material |
+| `VIGIL_PUBLIC_URL` | browser origin | URL shown in install commands |
+| `VIGIL_TLS`, `VIGIL_TLS_CERT`, `VIGIL_TLS_KEY`, `VIGIL_TLS_SANS` | `auto` | see TLS |
+| `VIGIL_ADMIN_EMAIL` / `VIGIL_ADMIN_PASSWORD` | `admin@vigil.local` / random | first start only |
+| `VIGIL_LOCAL_AGENT` | `true` | monitor the hub host |
+| `VIGIL_HOST_ROOT` | – | host `/` mounted read-only (e.g. `/host`) for real disk usage |
+| `VIGIL_RETENTION_RAW_DAYS` / `VIGIL_RETENTION_DAYS` | `3` / `90` | metrics retention |
+| `VIGIL_SESSION_IDLE_HOURS` | `12` | session idle timeout |
+| `VIGIL_TRUST_PROXY`, `VIGIL_SECURE_COOKIES` | `false` | reverse-proxy deployments |
+| `VIGIL_LOG` | `info` | log filter, e.g. `debug,tower_http=info` |
+
+Back up the `vigil-data` volume (`vigil.db` and `tls/`). If you lose `tls/`, every agent must be re-enrolled, because they pin the old certificate.
+
+## Agent configuration (`agent.toml`)
+
+```toml
+hub_url = "https://hub:8443"
+agent_id = "…"            # written by `install`
+secret = "…"
+fingerprint = "AA:BB:…"   # optional pin
+interval_secs = 10        # metrics period (2–300)
+
+[docker]
+enabled = true
+# socket = "/var/run/docker.sock"
+
+[mssql]
+# enabled = true          # default: auto-detect
+# errorlog_dir = "/var/opt/mssql/log"
+
+[iis]
+# enabled = true          # default: auto-detect (Windows)
+```
+
+## Development
+
+```bash
+# hub + agent
+cargo test --workspace
+cargo build -p vigil-hub
+VIGIL_DATA_DIR=./dev-data VIGIL_LISTEN=127.0.0.1:8443 VIGIL_AGENTS_DIR=./target/debug ./target/debug/vigil-hub
+
+# web console with hot reload (proxies /api to the hub on :8443)
+cd web && npm install && npm run dev
+
+# Windows agent from Linux
+rustup target add x86_64-pc-windows-gnu && sudo apt install gcc-mingw-w64-x86-64
+cargo build -p vigil-agent --release --target x86_64-pc-windows-gnu
+```
+
+Layout:
+
+```
+crates/common   wire protocol (agent ⇄ hub messages)
+crates/agent    agent library + binary: system, docker, mssql, iis, log following, install/service
+crates/hub      axum server: auth, rbac, registry, api, metrics store, tls; embeds web/dist
+web/            React + TypeScript console (uPlot charts, xterm.js terminal)
+deploy/         install.sh served to Linux servers
+```
+
+Adding a capability (Kubernetes, PostgreSQL, alerts, …) follows one pattern:
+
+1. Add a `Request` / `StreamRequest` variant in `crates/common`.
+2. Implement it in the agent.
+3. Map it to a permission in `crates/hub/src/rbac.rs`. The compiler forces this step.
+4. Add a tab in the UI.
+
+## Roadmap ideas
+
+Kubernetes (pods, deployments, events, pod logs/exec) · alert rules with email/Teams/Slack webhooks · Windows services and Event Log · multi-container merged log view · SSO (OIDC) · hub on Windows.

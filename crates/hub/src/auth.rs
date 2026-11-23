@@ -260,7 +260,7 @@ fn session_cookie(state: &S, token: &str, max_age: i64) -> HeaderValue {
 }
 
 /// A real Argon2 hash used for unknown accounts so both paths take the same time.
-fn dummy_hash() -> String {
+pub fn dummy_hash() -> String {
     static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     H.get_or_init(|| hash_password(&random_token(16)).unwrap_or_default()).clone()
 }

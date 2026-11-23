@@ -224,7 +224,7 @@ async fn main() -> Result<()> {
     let state: S = Arc::new(AppState { cfg: cfg.clone(), db: db.clone(), reg: Registry::default(), tls: tls.clone(), throttle: Throttle::default() });
 
     // Warm the constant-time dummy hash so the first failed login is not faster.
-    tokio::task::spawn_blocking(|| auth::verify_password("x", "invalid"));
+    tokio::task::spawn_blocking(auth::dummy_hash);
 
     tokio::spawn(metrics::maintenance_loop(db.clone(), cfg.retention_raw_days, cfg.retention_days));
     if cfg.local_agent {
