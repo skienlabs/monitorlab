@@ -58,12 +58,12 @@ async fn security_headers(req: Request, next: Next) -> Response {
     resp
 }
 
-/// State-changing API calls must carry the `X-Vigil-Csrf` header (which a cross-site form or
+/// State-changing API calls must carry the `X-MonitorLab-Csrf` header (which a cross-site form or
 /// simple request cannot set) and, when present, a same-origin `Origin`.
 async fn csrf_guard(State(state): State<S>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     if !safe {
-        let has_header = req.headers().get("x-vigil-csrf").map(|v| v == "1").unwrap_or(false);
+        let has_header = req.headers().get("x-monitorlab-csrf").map(|v| v == "1").unwrap_or(false);
         let origin_ok = req.headers().get(header::ORIGIN).is_none() || api::same_origin(&state, req.headers());
         if !has_header || !origin_ok {
             return (StatusCode::FORBIDDEN, Json(json!({ "error": "CSRF check failed" }))).into_response();
@@ -165,7 +165,7 @@ async fn bootstrap(db: &Db, cfg: &HubConfig) -> Result<()> {
         let email = cfg.admin_email.trim().to_lowercase();
         let (password, generated) = match &cfg.admin_password {
             Some(p) if p.len() >= 10 => (p.clone(), false),
-            Some(_) => anyhow::bail!("VIGIL_ADMIN_PASSWORD must be at least 10 characters"),
+            Some(_) => anyhow::bail!("MONITORLAB_ADMIN_PASSWORD must be at least 10 characters"),
             None => (random_password(20), true),
         };
         let hash = auth::hash_password(&password)?;
@@ -194,7 +194,7 @@ async fn bootstrap(db: &Db, cfg: &HubConfig) -> Result<()> {
             tracing::warn!(" (also saved to {}; change it at first login)", note.display());
             tracing::warn!("==========================================================");
         } else {
-            tracing::info!("initial administrator {email} created from VIGIL_ADMIN_PASSWORD");
+            tracing::info!("initial administrator {email} created from MONITORLAB_ADMIN_PASSWORD");
         }
     }
     Ok(())
@@ -223,13 +223,13 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("VIGIL_LOG")
+            tracing_subscriber::EnvFilter::try_from_env("MONITORLAB_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=warn,bollard=warn")),
         )
         .init();
 
     std::fs::create_dir_all(&cfg.data_dir).with_context(|| format!("creating {}", cfg.data_dir.display()))?;
-    let db = Db::open(&cfg.data_dir.join("vigil.db"))?;
+    let db = Db::open(&cfg.data_dir.join("monitorlab.db"))?;
     bootstrap(&db, &cfg).await?;
     let tls = tls::load(&cfg)?;
 
@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
     }
 
     let app = router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
-    tracing::info!("Vigil hub {} listening on {}://{}", vigil_common::VERSION, if tls.is_some() { "https" } else { "http" }, cfg.listen);
+    tracing::info!("MonitorLab hub {} listening on {}://{}", monitorlab_common::VERSION, if tls.is_some() { "https" } else { "http" }, cfg.listen);
     if let Some(t) = &tls {
         tracing::info!("TLS certificate SHA-256 fingerprint: {}", t.fingerprint);
         let handle = axum_server::Handle::new();

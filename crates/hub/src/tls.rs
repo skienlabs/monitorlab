@@ -125,8 +125,8 @@ pub fn load(cfg: &HubConfig) -> Result<Option<TlsInfo>> {
             (c, k, true)
         }
         TlsMode::Files => {
-            let c = cfg.tls_cert.clone().ok_or_else(|| anyhow!("VIGIL_TLS=files requires VIGIL_TLS_CERT"))?;
-            let k = cfg.tls_key.clone().ok_or_else(|| anyhow!("VIGIL_TLS=files requires VIGIL_TLS_KEY"))?;
+            let c = cfg.tls_cert.clone().ok_or_else(|| anyhow!("MONITORLAB_TLS=files requires MONITORLAB_TLS_CERT"))?;
+            let k = cfg.tls_key.clone().ok_or_else(|| anyhow!("MONITORLAB_TLS=files requires MONITORLAB_TLS_KEY"))?;
             (c, k, false)
         }
     };

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use rusqlite::params;
 use serde_json::{json, Value};
-use vigil_common::MetricsSample;
+use monitorlab_common::MetricsSample;
 
 use crate::db::Db;
 use crate::util::now_ms;

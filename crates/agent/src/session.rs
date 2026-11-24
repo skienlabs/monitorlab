@@ -8,7 +8,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use vigil_common::{AgentHello, AgentMsg, Capabilities, HubMsg, Request, StreamData, StreamRequest};
+use monitorlab_common::{AgentHello, AgentMsg, Capabilities, HubMsg, Request, StreamData, StreamRequest};
 
 use crate::config::{AgentConfig, MssqlConfig};
 use crate::docker::DockerCtl;

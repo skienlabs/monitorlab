@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Vigil end-to-end regression suite.
+MonitorLab end-to-end regression suite.
 
 Runs against a live hub (with its built-in agent and access to Docker) and exercises the
 real API, WebSocket streams, enrollment, RBAC, alerting and audit. Every check prints PASS/FAIL;
@@ -8,7 +8,7 @@ the exit code is non-zero if anything failed.
 
   pip install requests websockets
   python3 tests/e2e.py --hub https://127.0.0.1:8443 --email admin@test.local --password '...' \
-      --agent-bin ./target/release/vigil-agent
+      --agent-bin ./target/release/monitorlab-agent
 
 Requirements: the hub's local agent can reach Docker, `docker` CLI on this machine talks to the
 same engine, and this machine can run the agent binary (for the enrollment tests).
@@ -45,7 +45,7 @@ class Client:
     def req(self, method, path, body=None, csrf=True, headers=None):
         h = {"content-type": "application/json"}
         if csrf:
-            h["x-vigil-csrf"] = "1"
+            h["x-monitorlab-csrf"] = "1"
         h.update(headers or {})
         r = self.s.request(method, self.hub + "/api" + path, data=None if body is None else json.dumps(body), headers=h, timeout=120)
         try:
@@ -64,7 +64,7 @@ class Client:
         return self.post("/auth/login", {"email": email, "password": pw})
 
     def cookie(self):
-        return self.s.cookies.get("vigil_session")
+        return self.s.cookies.get("monitorlab_session")
 
 
 def sh(*args, check_rc=True):
@@ -83,7 +83,7 @@ async def ws_stream(hub, cookie, sid, req, sends=(), dur=3.0, origin=None):
     out = []
     try:
         async with websockets.connect(url, ssl=ctx if hub.startswith("https") else None, origin=origin or hub,
-                                      additional_headers={"Cookie": f"vigil_session={cookie}"}) as ws:
+                                      additional_headers={"Cookie": f"monitorlab_session={cookie}"}) as ws:
             await ws.send(json.dumps(req))
             for s in sends:
                 await asyncio.sleep(0.8)
@@ -133,7 +133,7 @@ def main():
     ap.add_argument("--hub", required=True)
     ap.add_argument("--email", required=True)
     ap.add_argument("--password", required=True)
-    ap.add_argument("--agent-bin", help="vigil-agent binary for enrollment tests")
+    ap.add_argument("--agent-bin", help="monitorlab-agent binary for enrollment tests")
     ap.add_argument("--webhook-port", type=int, default=0, help="local port for the webhook sink (0 = random)")
     a = ap.parse_args()
     tag = "e2e-" + secrets.token_hex(3)
@@ -164,7 +164,7 @@ def main():
         r = admin.s.get(hub + "/")
         csp = r.headers.get("content-security-policy", "")
         check("security headers on UI", "frame-ancestors 'none'" in csp and r.headers.get("x-frame-options") == "DENY", dict(r.headers))
-        setc = admin.s.post(hub + "/api/auth/login", json={"email": a.email, "password": a.password}, headers={"x-vigil-csrf": "1"}).headers.get("set-cookie", "")
+        setc = admin.s.post(hub + "/api/auth/login", json={"email": a.email, "password": a.password}, headers={"x-monitorlab-csrf": "1"}).headers.get("set-cookie", "")
         check("session cookie is HttpOnly + SameSite=Strict", "HttpOnly" in setc and "SameSite=Strict" in setc, setc)
         code, _ = admin.get("/does-not-exist")
         check("unknown API path is a JSON 404", code == 404)
@@ -335,7 +335,7 @@ def main():
         paths = {p for p, _ in HOOKS}
         check("teams payload is an Adaptive Card", any(p == "/teams" and b.get("attachments", [{}])[0].get("contentType") == "application/vnd.microsoft.card.adaptive" for p, b in HOOKS), HOOKS)
         check("slack payload has text", any(p == "/slack" and "text" in b for p, b in HOOKS), paths)
-        check("generic webhook payload has fields", any(p == "/webhook" and b.get("source") == "vigil" and b.get("severity") for p, b in HOOKS), paths)
+        check("generic webhook payload has fields", any(p == "/webhook" and b.get("source") == "monitorlab" and b.get("severity") for p, b in HOOKS), paths)
         code, d = admin.post("/alert-channels", {"name": f"{tag}-mail", "kind": "email", "url": "not-an-email"})
         check("email channel validates recipients", code == 400, (code, d))
         code, d = admin.post("/alert-channels", {"name": f"{tag}-x", "kind": "webhook", "url": "ftp://x"})

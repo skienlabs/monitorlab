@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sysinfo::{
     CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System,
 };
-use vigil_common::{AgentHello, Capabilities, DiskInfo, MetricsSample, OsFamily, PROTOCOL_VERSION, VERSION};
+use monitorlab_common::{AgentHello, Capabilities, DiskInfo, MetricsSample, OsFamily, PROTOCOL_VERSION, VERSION};
 
 use crate::util::{host_path, now_ms};
 

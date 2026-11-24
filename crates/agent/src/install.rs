@@ -1,4 +1,4 @@
-//! `vigil-agent install` / `uninstall`: enroll with the hub and register a system service.
+//! `monitorlab-agent install` / `uninstall`: enroll with the hub and register a system service.
 
 #[cfg(unix)]
 use std::path::Path;
@@ -40,11 +40,11 @@ pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
 // ======================================================================= Linux (systemd)
 
 #[cfg(unix)]
-const UNIT_PATH: &str = "/etc/systemd/system/vigil-agent.service";
+const UNIT_PATH: &str = "/etc/systemd/system/monitorlab-agent.service";
 #[cfg(unix)]
-const BIN_PATH: &str = "/usr/local/bin/vigil-agent";
+const BIN_PATH: &str = "/usr/local/bin/monitorlab-agent";
 #[cfg(unix)]
-const SERVICE_USER: &str = "vigil";
+const SERVICE_USER: &str = "monitorlab";
 
 #[cfg(unix)]
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
@@ -101,7 +101,7 @@ pub async fn install(args: InstallArgs) -> Result<()> {
     let supplementary = if groups.is_empty() { String::new() } else { format!("SupplementaryGroups={}\n", groups.join(" ")) };
     let unit = format!(
         "[Unit]\n\
-Description=Vigil monitoring agent\n\
+Description=MonitorLab monitoring agent\n\
 After=network-online.target docker.service\n\
 Wants=network-online.target\n\n\
 [Service]\n\
@@ -124,13 +124,13 @@ WantedBy=multi-user.target\n",
     );
     std::fs::write(UNIT_PATH, unit)?;
     run("systemctl", &["daemon-reload"])?;
-    let o = run("systemctl", &["enable", "--now", "vigil-agent"])?;
+    let o = run("systemctl", &["enable", "--now", "monitorlab-agent"])?;
     if !o.status.success() {
         bail!("systemctl enable failed: {}", String::from_utf8_lossy(&o.stderr));
     }
-    let _ = run("systemctl", &["restart", "vigil-agent"]);
-    println!("Service vigil-agent installed and started (groups: {}).", if groups.is_empty() { "none".into() } else { groups.join(", ") });
-    println!("Check status with: systemctl status vigil-agent   |   logs: journalctl -u vigil-agent -f");
+    let _ = run("systemctl", &["restart", "monitorlab-agent"]);
+    println!("Service monitorlab-agent installed and started (groups: {}).", if groups.is_empty() { "none".into() } else { groups.join(", ") });
+    println!("Check status with: systemctl status monitorlab-agent   |   logs: journalctl -u monitorlab-agent -f");
     Ok(())
 }
 
@@ -139,7 +139,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
     if !is_root() {
         bail!("uninstall must be run as root (use sudo)");
     }
-    let _ = run("systemctl", &["disable", "--now", "vigil-agent"]);
+    let _ = run("systemctl", &["disable", "--now", "monitorlab-agent"]);
     let _ = std::fs::remove_file(UNIT_PATH);
     let _ = run("systemctl", &["daemon-reload"]);
     if purge {
@@ -155,7 +155,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
         }
         let _ = std::fs::remove_file(BIN_PATH);
     }
-    println!("vigil-agent service removed{}.", if purge { " (config, user and binary purged)" } else { "" });
+    println!("monitorlab-agent service removed{}.", if purge { " (config, user and binary purged)" } else { "" });
     Ok(())
 }
 
@@ -180,19 +180,19 @@ pub async fn install(args: InstallArgs) -> Result<()> {
     }
 
     let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
-    let dir = PathBuf::from(program_files).join("Vigil");
+    let dir = PathBuf::from(program_files).join("MonitorLab");
     std::fs::create_dir_all(&dir)?;
-    let target = dir.join("vigil-agent.exe");
+    let target = dir.join("monitorlab-agent.exe");
     let me = std::env::current_exe()?;
     if me != target {
         // If an older service is running it holds the file; stop it first.
         uninstall_service_only();
-        std::fs::copy(&me, &target).context("copying vigil-agent.exe")?;
+        std::fs::copy(&me, &target).context("copying monitorlab-agent.exe")?;
     }
 
     let info = ServiceInfo {
         name: OsString::from(crate::winsvc::SERVICE_NAME),
-        display_name: OsString::from("Vigil Monitoring Agent"),
+        display_name: OsString::from("MonitorLab Monitoring Agent"),
         service_type: ServiceType::OWN_PROCESS,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
@@ -210,7 +210,7 @@ pub async fn install(args: InstallArgs) -> Result<()> {
             manager.create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)?
         }
     };
-    service.set_description("Collects server, IIS and SQL Server metrics for the Vigil hub")?;
+    service.set_description("Collects server, IIS and SQL Server metrics for the MonitorLab hub")?;
     let _ = std::process::Command::new("sc.exe")
         .args(["failure", crate::winsvc::SERVICE_NAME, "reset=", "86400", "actions=", "restart/5000/restart/10000/restart/60000"])
         .output();
@@ -250,6 +250,6 @@ pub fn uninstall(purge: bool) -> Result<()> {
     if purge {
         let _ = std::fs::remove_file(default_config_path());
     }
-    println!("Vigil agent service removed{}.", if purge { " (config purged)" } else { "" });
+    println!("MonitorLab agent service removed{}.", if purge { " (config purged)" } else { "" });
     Ok(())
 }

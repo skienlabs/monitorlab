@@ -1,5 +1,5 @@
 [package]
-name = "vigil-agent"
+name = "monitorlab-agent"
 version.workspace = true
 edition.workspace = true
 
@@ -7,7 +7,7 @@ edition.workspace = true
 path = "src/lib.rs"
 
 [[bin]]
-name = "vigil-agent"
+name = "monitorlab-agent"
 path = "src/main.rs"
 
 [features]
@@ -16,7 +16,7 @@ default = ["mssql-query"]
 mssql-query = ["dep:tiberius", "dep:tokio-util"]
 
 [dependencies]
-vigil-common = { path = "../common" }
+monitorlab-common = { path = "../common" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

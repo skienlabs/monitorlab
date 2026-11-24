@@ -1,0 +1,144 @@
+name: Build & Deploy MonitorLab
+
+# Same flow as the other apps: test, build image, push to GAR, SSH to the VM, pull and restart.
+# Uses the same secrets: GCP_SA_KEY, GCP_PROJECT_ID, VM_HOST, VM_USER, VM_SSH_KEY.
+# Extra safety: the built image is started on the runner and the full end-to-end suite runs
+# against it before anything is pushed or deployed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two deploys at once; a second one waits for the first.
+concurrency:
+  group: deploy-monitorlab
+  cancel-in-progress: false
+
+env:
+  IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/test-images/monitorlab
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The hub embeds web/dist, so the console is built before the Rust tests.
+      - name: Web console (type-check + build)
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rust unit tests
+        run: cargo test --workspace --locked
+
+  build-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # Authenticate to GCP
+      - name: Auth GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # Configure Docker
+      - name: Configure Docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      # Build image (web console, hub, Linux + Windows agents are all built inside Docker)
+      - name: Build image
+        run: |
+          docker build \
+            -t "$IMAGE:latest" \
+            -t "$IMAGE:${GITHUB_SHA::7}" \
+            .
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Start the freshly built image and run the regression suite against it.
+      - name: End-to-end tests against the image
+        run: |
+          docker pull -q alpine:3.20
+          docker run -d --name monitorlab-ci \
+            --network host --pid host \
+            -e MONITORLAB_ADMIN_EMAIL=ci@monitorlab.local \
+            -e MONITORLAB_ADMIN_PASSWORD=ci-only-password-123 \
+            -e MONITORLAB_HOST_ROOT=/host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /:/host:ro \
+            "$IMAGE:latest"
+          for i in $(seq 1 45); do
+            curl -skf https://127.0.0.1:8443/api/health >/dev/null && break
+            sleep 2
+          done
+          curl -skf https://127.0.0.1:8443/api/health
+          docker cp monitorlab-ci:/opt/monitorlab/agents/monitorlab-agent-linux-amd64 ./monitorlab-agent
+          chmod +x ./monitorlab-agent
+          pip install -q requests websockets
+          python tests/e2e.py \
+            --hub https://127.0.0.1:8443 \
+            --email ci@monitorlab.local \
+            --password ci-only-password-123 \
+            --agent-bin ./monitorlab-agent
+
+      - name: Hub logs (on failure)
+        if: failure()
+        run: docker logs monitorlab-ci 2>&1 | tail -200 || true
+
+      # Push image (latest + commit sha, so you can roll back)
+      - name: Push image
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA::7}"
+
+      # Deploy to VM
+      - name: Deploy to VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: 2232
+          script: |
+            set -e
+            export PATH="$HOME/google-cloud-sdk/bin:$PATH"
+            cd ~/docker/apps/monitorlab
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+            # Fail the workflow if the hub does not come back up.
+            for i in $(seq 1 30); do
+              if curl -skf https://127.0.0.1:8443/api/health >/dev/null || curl -sf http://127.0.0.1:8443/api/health >/dev/null; then
+                echo "MonitorLab is up"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "MonitorLab did not become healthy" >&2
+            docker compose logs --tail=100
+            exit 1

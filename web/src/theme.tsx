@@ -12,7 +12,7 @@ export const useTheme = () => useContext(Ctx);
 
 function read(): Mode {
   try {
-    const v = localStorage.getItem("vigil.theme");
+    const v = localStorage.getItem("monitorlab.theme");
     if (v === "light" || v === "dark" || v === "system") return v;
   } catch {
     /* ignore */
@@ -35,7 +35,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setMode = (m: Mode) => {
     setModeState(m);
     try {
-      localStorage.setItem("vigil.theme", m);
+      localStorage.setItem("monitorlab.theme", m);
     } catch {
       /* ignore */
     }

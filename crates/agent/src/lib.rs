@@ -1,7 +1,7 @@
-//! Vigil agent library.
+//! MonitorLab agent library.
 //!
 //! The same code runs in two places:
-//! * the standalone `vigil-agent` binary on monitored servers (dials out to the hub), and
+//! * the standalone `monitorlab-agent` binary on monitored servers (dials out to the hub), and
 //! * inside the hub process, to monitor the hub's own host (wired up with in-memory channels).
 
 pub mod config;

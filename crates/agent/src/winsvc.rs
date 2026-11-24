@@ -1,4 +1,4 @@
-//! Windows service entry point (`vigil-agent service --config ...`, started by the SCM).
+//! Windows service entry point (`monitorlab-agent service --config ...`, started by the SCM).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::config::AgentConfig;
 
-pub const SERVICE_NAME: &str = "VigilAgent";
+pub const SERVICE_NAME: &str = "MonitorLabAgent";
 
 static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
 

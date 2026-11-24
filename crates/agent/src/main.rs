@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use vigil_agent::config::{default_config_path, AgentConfig};
-use vigil_agent::install::InstallArgs;
+use monitorlab_agent::config::{default_config_path, AgentConfig};
+use monitorlab_agent::install::InstallArgs;
 
 #[derive(Parser)]
-#[command(name = "vigil-agent", version = vigil_common::VERSION, about = "Lightweight Vigil monitoring agent")]
+#[command(name = "monitorlab-agent", version = monitorlab_common::VERSION, about = "Lightweight MonitorLab monitoring agent")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -16,7 +16,7 @@ struct Cli {
 enum Cmd {
     /// Run the agent in the foreground.
     Run {
-        #[arg(long, env = "VIGIL_AGENT_CONFIG")]
+        #[arg(long, env = "MONITORLAB_AGENT_CONFIG")]
         config: Option<PathBuf>,
     },
     /// Enroll with the hub and install as a system service (systemd / Windows service).
@@ -59,7 +59,7 @@ enum Cmd {
 }
 
 fn init_logging(to_file: Option<PathBuf>) {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("VIGIL_LOG")
+    let filter = tracing_subscriber::EnvFilter::try_from_env("MONITORLAB_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,bollard=warn,tiberius=warn"));
     match to_file {
         Some(path) => {
@@ -90,28 +90,28 @@ fn main() -> Result<()> {
             init_logging(None);
             let path = config.unwrap_or_else(default_config_path);
             let cfg = AgentConfig::load(&path)?;
-            tracing::info!("vigil-agent {} starting (config {})", vigil_common::VERSION, path.display());
+            tracing::info!("monitorlab-agent {} starting (config {})", monitorlab_common::VERSION, path.display());
             runtime()?.block_on(async {
                 tokio::select! {
-                    r = vigil_agent::conn::run_forever(cfg) => r,
+                    r = monitorlab_agent::conn::run_forever(cfg) => r,
                     _ = tokio::signal::ctrl_c() => { tracing::info!("shutting down"); Ok(()) }
                 }
             })
         }
         Cmd::Install { hub, token, fingerprint, config } => {
-            runtime()?.block_on(vigil_agent::install::install(InstallArgs { hub, token, fingerprint, config }))
+            runtime()?.block_on(monitorlab_agent::install::install(InstallArgs { hub, token, fingerprint, config }))
         }
         Cmd::Enroll { hub, token, fingerprint, config } => {
-            runtime()?.block_on(vigil_agent::install::enroll_and_save(&InstallArgs { hub, token, fingerprint, config }))?;
+            runtime()?.block_on(monitorlab_agent::install::enroll_and_save(&InstallArgs { hub, token, fingerprint, config }))?;
             Ok(())
         }
-        Cmd::Uninstall { purge } => vigil_agent::install::uninstall(purge),
+        Cmd::Uninstall { purge } => monitorlab_agent::install::uninstall(purge),
         Cmd::Service { config } => {
             let path = config.unwrap_or_else(default_config_path);
             #[cfg(windows)]
             {
                 init_logging(path.parent().map(|d| d.join("agent.log")));
-                vigil_agent::winsvc::run_dispatcher(path)
+                monitorlab_agent::winsvc::run_dispatcher(path)
             }
             #[cfg(not(windows))]
             {

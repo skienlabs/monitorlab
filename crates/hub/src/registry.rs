@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, Notify};
-use vigil_common::{AgentHello, AgentMsg, HubMsg, MetricsSample, Request, StreamData, StreamRequest};
+use monitorlab_common::{AgentHello, AgentMsg, HubMsg, MetricsSample, Request, StreamData, StreamRequest};
 
 use crate::util::now_ms;
 

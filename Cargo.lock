@@ -1556,6 +1556,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitorlab-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bollard",
+ "clap",
+ "futures-util",
+ "hex",
+ "monitorlab-common",
+ "rand 0.8.8",
+ "roxmltree",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sysinfo",
+ "tiberius",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "webpki-roots 0.26.11",
+ "windows-service",
+ "winreg",
+]
+
+[[package]]
+name = "monitorlab-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "monitorlab-hub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "axum-server",
+ "base64 0.22.1",
+ "clap",
+ "futures-util",
+ "hex",
+ "lettre",
+ "mime_guess",
+ "monitorlab-agent",
+ "monitorlab-common",
+ "rand 0.8.8",
+ "rcgen",
+ "reqwest",
+ "rusqlite",
+ "rust-embed",
+ "rustls 0.23.46",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3027,77 +3098,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vigil-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bollard",
- "clap",
- "futures-util",
- "hex",
- "rand 0.8.8",
- "roxmltree",
- "rustls 0.23.46",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sysinfo",
- "tiberius",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "vigil-common",
- "webpki-roots 0.26.11",
- "windows-service",
- "winreg",
-]
-
-[[package]]
-name = "vigil-common"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "vigil-hub"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "axum-server",
- "base64 0.22.1",
- "clap",
- "futures-util",
- "hex",
- "lettre",
- "mime_guess",
- "rand 0.8.8",
- "rcgen",
- "reqwest",
- "rusqlite",
- "rust-embed",
- "rustls 0.23.46",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "subtle",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vigil-agent",
- "vigil-common",
-]
 
 [[package]]
 name = "walkdir"

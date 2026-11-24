@@ -39,7 +39,7 @@ async def main():
         await page.wait_for_timeout(800)
         await page.screenshot(path=f"{OUT}/02-overview.png")
         sid = await page.evaluate("fetch('/api/servers').then(r => r.json()).then(l => l.find(s => s.is_local).id)")
-        cont = A.container or await page.evaluate(f"fetch('/api/servers/{sid}/rpc', {{method:'POST', headers:{{'content-type':'application/json','x-vigil-csrf':'1'}}, body: JSON.stringify({{op:'docker_containers'}})}}).then(r => r.json()).then(l => l.filter(c => c.state === 'running').map(c => c.name).sort()[0])")
+        cont = A.container or await page.evaluate(f"fetch('/api/servers/{sid}/rpc', {{method:'POST', headers:{{'content-type':'application/json','x-monitorlab-csrf':'1'}}, body: JSON.stringify({{op:'docker_containers'}})}}).then(r => r.json()).then(l => l.filter(c => c.state === 'running').map(c => c.name).sort()[0])")
         await page.goto(f"{H}/servers/{sid}"); await page.wait_for_selector(".uplot"); await page.wait_for_timeout(1500)
         await page.mouse.move(500, 620); await page.wait_for_timeout(300)
         await page.screenshot(path=f"{OUT}/03-server-overview.png", full_page=True)
@@ -67,7 +67,7 @@ async def main():
         await page.screenshot(path=f"{OUT}/09b-add-server-windows.png")
         await page.click(".dialog button:has-text('Done')")
         # remove the server created by this walk
-        await page.evaluate("fetch('/api/servers').then(r => r.json()).then(l => Promise.all(l.filter(s => s.name === 'prod-iis-02').map(s => fetch('/api/servers/' + s.id, {method: 'DELETE', headers: {'x-vigil-csrf': '1'}}))))")
+        await page.evaluate("fetch('/api/servers').then(r => r.json()).then(l => Promise.all(l.filter(s => s.name === 'prod-iis-02').map(s => fetch('/api/servers/' + s.id, {method: 'DELETE', headers: {'x-monitorlab-csrf': '1'}}))))")
         await page.goto(f"{H}/admin/users"); await page.wait_for_selector("table"); await page.click("button:has-text('Add user')"); await page.wait_for_timeout(300)
         await page.screenshot(path=f"{OUT}/10-users-add.png")
         await page.keyboard.press("Escape")
@@ -84,7 +84,7 @@ async def main():
         await page.keyboard.press("Escape")
         await page.goto(f"{H}/account"); await page.wait_for_selector("text=Change password")
         # dark mode
-        await page.evaluate("localStorage.setItem('vigil.theme','dark')")
+        await page.evaluate("localStorage.setItem('monitorlab.theme','dark')")
         await page.goto(f"{H}/servers/{sid}"); await page.wait_for_selector(".uplot"); await page.wait_for_timeout(1500)
         await page.screenshot(path=f"{OUT}/13-dark-server.png")
         await page.goto(f"{H}/servers/{sid}/containers/{cont}?tab=logs"); await page.wait_for_selector(".logs-view .ln"); await page.wait_for_timeout(1500)

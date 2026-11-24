@@ -4,3 +4,4 @@
 *.db
 sandbox-ca.crt
 /web/tsconfig.tsbuildinfo
+/monitorlab-agent

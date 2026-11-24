@@ -33,14 +33,14 @@ const CONFIG_SNIPPET = `# agent.toml — optional read-only DMV access
 [mssql.connection]
 host = "127.0.0.1"
 port = 1433
-user = "vigil_monitor"
+user = "monitorlab_monitor"
 password = "…"
 trust_cert = true
 
 -- on SQL Server:
--- CREATE LOGIN vigil_monitor WITH PASSWORD = '…';
--- GRANT VIEW SERVER STATE TO vigil_monitor;
--- GRANT VIEW ANY DEFINITION TO vigil_monitor;`;
+-- CREATE LOGIN monitorlab_monitor WITH PASSWORD = '…';
+-- GRANT VIEW SERVER STATE TO monitorlab_monitor;
+-- GRANT VIEW ANY DEFINITION TO monitorlab_monitor;`;
 
 export function MssqlTab({ s }: { s: Server }) {
   const { can } = useAuth();

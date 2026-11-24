@@ -15,7 +15,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
-use vigil_common::{AgentMsg, HubMsg};
+use monitorlab_common::{AgentMsg, HubMsg};
 
 use crate::metrics;
 use crate::registry::AgentConn;
@@ -262,7 +262,7 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         })
         .await?;
 
-    let opts = vigil_agent::AgentOptions {
+    let opts = monitorlab_agent::AgentOptions {
         interval_secs: 10,
         docker_enabled: true,
         docker_socket: None,
@@ -271,7 +271,7 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         host_root: state.cfg.host_root.clone(),
     };
     tokio::spawn(async move {
-        let agent = vigil_agent::Agent::new(opts);
+        let agent = monitorlab_agent::Agent::new(opts);
         loop {
             let (hub_tx, hub_rx) = mpsc::channel::<HubMsg>(256);
             let (agent_tx, agent_rx) = mpsc::channel::<AgentMsg>(512);

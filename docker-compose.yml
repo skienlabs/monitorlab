@@ -1,9 +1,9 @@
-# Vigil hub. Monitors this host too (via the Docker socket and a read-only view of /).
+# MonitorLab hub. Monitors this host too (via the Docker socket and a read-only view of /).
 services:
-  vigil:
-    image: vigil-hub:latest
+  monitorlab:
+    image: monitorlab-hub:latest
     build: .
-    container_name: vigil
+    container_name: monitorlab
     restart: unless-stopped
     # Host networking and PID namespace give the built-in agent the host's real
     # network counters and process list. The hub listens on :8443.
@@ -11,17 +11,17 @@ services:
     pid: host
     environment:
       # Address agents on other servers use to reach this hub:
-      VIGIL_PUBLIC_URL: "https://monitor.example.local:8443"
+      MONITORLAB_PUBLIC_URL: "https://monitor.example.local:8443"
       # Extra names/IPs for the auto-generated TLS certificate (comma separated):
-      VIGIL_TLS_SANS: "monitor.example.local"
-      VIGIL_HOST_ROOT: /host
-      VIGIL_ADMIN_EMAIL: "admin@example.local"
-      # VIGIL_ADMIN_PASSWORD: set it, or read the generated one from `docker logs vigil`
+      MONITORLAB_TLS_SANS: "monitor.example.local"
+      MONITORLAB_HOST_ROOT: /host
+      MONITORLAB_ADMIN_EMAIL: "admin@example.local"
+      # MONITORLAB_ADMIN_PASSWORD: set it, or read the generated one from `docker logs monitorlab`
       TZ: "Asia/Kolkata"
     volumes:
-      - vigil-data:/data
+      - monitorlab-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/host:ro
 
 volumes:
-  vigil-data:
+  monitorlab-data:

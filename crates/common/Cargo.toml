@@ -1,5 +1,5 @@
 [package]
-name = "vigil-common"
+name = "monitorlab-common"
 version.workspace = true
 edition.workspace = true
 

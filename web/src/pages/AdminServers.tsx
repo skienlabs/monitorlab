@@ -32,29 +32,29 @@ function InstallSteps({ t, info }: { t: Token; info: HubInfo }) {
   const linux =
     `curl -fsSL ${pin ? `-k --pinnedpubkey '${pin}' ` : ""}${hub}/download/install.sh | sudo sh -s -- \\\n` +
     `  --hub ${hub} --token ${t.token}${fp ? ` \\\n  --fingerprint ${fp}` : ""}${pin ? ` \\\n  --pin '${pin}'` : ""}`;
-  const win = `.\\vigil-agent-windows-amd64.exe install --hub ${hub} --token ${t.token}${fp ? ` \`\n  --fingerprint ${fp}` : ""}`;
+  const win = `.\\monitorlab-agent-windows-amd64.exe install --hub ${hub} --token ${t.token}${fp ? ` \`\n  --fingerprint ${fp}` : ""}`;
   const local = !info.public_url && /^(localhost|127\.|\[::1\])/.test(location.hostname);
   return (
     <div className="col" style={{ gap: 14 }}>
-      {local && <div className="banner warn small">You are using the hub via {location.host}. Other servers cannot reach that address — set VIGIL_PUBLIC_URL on the hub, or open the hub by its network address.</div>}
+      {local && <div className="banner warn small">You are using the hub via {location.host}. Other servers cannot reach that address — set MONITORLAB_PUBLIC_URL on the hub, or open the hub by its network address.</div>}
       <Seg value={os} onChange={setOs} options={[{ value: "linux", label: "Linux (systemd)" }, { value: "windows", label: "Windows Server" }]} />
       {os === "linux" ? (
         <>
-          <div className="small">Run on the server you want to monitor. It downloads the agent from this hub{pin ? " (certificate-pinned)" : ""}, enrolls it and installs a systemd service that runs as an unprivileged <span className="mono">vigil</span> user with Docker access.</div>
+          <div className="small">Run on the server you want to monitor. It downloads the agent from this hub{pin ? " (certificate-pinned)" : ""}, enrolls it and installs a systemd service that runs as an unprivileged <span className="mono">monitorlab</span> user with Docker access.</div>
           <CodeBlock>{linux}</CodeBlock>
-          {!info.downloads.linux_amd64 && <div className="banner warn small">This hub image does not bundle the Linux agent binary. Build it with <span className="mono">cargo build -p vigil-agent --release</span> and place it in the agents directory.</div>}
+          {!info.downloads.linux_amd64 && <div className="banner warn small">This hub image does not bundle the Linux agent binary. Build it with <span className="mono">cargo build -p monitorlab-agent --release</span> and place it in the agents directory.</div>}
         </>
       ) : (
         <>
           <ol className="small" style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
             <li>
               Download{" "}
-              {info.downloads.windows_amd64 ? <a href="/download/vigil-agent-windows-amd64.exe">vigil-agent-windows-amd64.exe</a> : <span className="mono">vigil-agent-windows-amd64.exe</span>} and copy it to the Windows server.
+              {info.downloads.windows_amd64 ? <a href="/download/monitorlab-agent-windows-amd64.exe">monitorlab-agent-windows-amd64.exe</a> : <span className="mono">monitorlab-agent-windows-amd64.exe</span>} and copy it to the Windows server.
             </li>
             <li>Open <b>PowerShell as Administrator</b> in that folder and run:</li>
           </ol>
           <CodeBlock>{win}</CodeBlock>
-          <div className="small muted">Installs the <span className="mono">VigilAgent</span> service (LocalSystem, automatic start, restart on failure). It collects system metrics, IIS sites, pools and logs, and SQL Server status and error logs.</div>
+          <div className="small muted">Installs the <span className="mono">MonitorLabAgent</span> service (LocalSystem, automatic start, restart on failure). It collects system metrics, IIS sites, pools and logs, and SQL Server status and error logs.</div>
         </>
       )}
       {fp && (
@@ -200,7 +200,7 @@ export function AdminServers() {
                             onClick={() =>
                               confirm({
                                 title: `Remove ${s.name}?`,
-                                body: "The server, its credentials and all stored metrics are deleted from the hub. The agent is disconnected and can no longer reconnect. Uninstall it on the server with: vigil-agent uninstall --purge",
+                                body: "The server, its credentials and all stored metrics are deleted from the hub. The agent is disconnected and can no longer reconnect. Uninstall it on the server with: monitorlab-agent uninstall --purge",
                                 confirm: "Remove server",
                                 danger: true,
                                 typeToConfirm: s.name,

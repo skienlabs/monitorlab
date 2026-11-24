@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
-use vigil_common::{AgentMsg, HubMsg};
+use monitorlab_common::{AgentMsg, HubMsg};
 
 use crate::config::AgentConfig;
 use crate::session::{Agent, AgentOptions};
@@ -122,7 +122,7 @@ async fn open(url: &str, fingerprint: Option<&str>, headers: &[(&'static str, St
     for (k, v) in headers {
         req.headers_mut().insert(*k, HeaderValue::from_str(v)?);
     }
-    req.headers_mut().insert("User-Agent", HeaderValue::from_str(&format!("vigil-agent/{}", vigil_common::VERSION))?);
+    req.headers_mut().insert("User-Agent", HeaderValue::from_str(&format!("monitorlab-agent/{}", monitorlab_common::VERSION))?);
     let connector = if url.starts_with("wss://") { Some(Connector::Rustls(Arc::new(tls_config(fingerprint)?))) } else { None };
     let (ws, _resp) = tokio::time::timeout(
         Duration::from_secs(20),
@@ -161,7 +161,7 @@ pub async fn enroll(hub: &str, token: &str, fingerprint: Option<&str>) -> Result
         token,
         hostname: sysinfo::System::host_name().unwrap_or_default(),
         os: if cfg!(windows) { "windows" } else { "linux" },
-        agent_version: vigil_common::VERSION,
+        agent_version: monitorlab_common::VERSION,
     };
     ws.send(Message::Text(serde_json::to_string(&req)?.into())).await?;
     let reply = tokio::time::timeout(Duration::from_secs(20), async {

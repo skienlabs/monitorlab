@@ -92,9 +92,9 @@ pub struct IisConfig {
 pub fn default_config_path() -> PathBuf {
     if cfg!(windows) {
         let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
-        Path::new(&base).join("Vigil").join("agent.toml")
+        Path::new(&base).join("MonitorLab").join("agent.toml")
     } else {
-        PathBuf::from("/etc/vigil/agent.toml")
+        PathBuf::from("/etc/monitorlab/agent.toml")
     }
 }
 
@@ -110,7 +110,7 @@ impl AgentConfig {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string_pretty(self)?;
-        let header = "# Vigil agent configuration. Keep this file private: it contains the agent secret.\n";
+        let header = "# MonitorLab agent configuration. Keep this file private: it contains the agent secret.\n";
         write_private(path, format!("{header}{text}").as_bytes())
     }
 }

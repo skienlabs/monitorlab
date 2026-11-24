@@ -1,5 +1,5 @@
 #!/bin/sh
-# Vigil agent installer for Linux (served by the hub at /download/install.sh).
+# MonitorLab agent installer for Linux (served by the hub at /download/install.sh).
 # Usage: curl -fsSL https://HUB/download/install.sh | sudo sh -s -- --hub https://HUB --token TOKEN [--fingerprint FP] [--pin sha256//...]
 set -eu
 
@@ -32,13 +32,13 @@ case "$(uname -m)" in
 esac
 
 HUB="${HUB%/}"
-DEST=/usr/local/bin/vigil-agent.download
-echo "Downloading vigil-agent ($ARCH) from $HUB ..."
+DEST=/usr/local/bin/monitorlab-agent.download
+echo "Downloading monitorlab-agent ($ARCH) from $HUB ..."
 if [ -n "$PIN" ]; then
   # Self-signed hub: skip CA validation but require the exact public key (pinned).
-  curl -fsSL --retry 3 -k --pinnedpubkey "$PIN" -o "$DEST" "$HUB/download/vigil-agent-linux-$ARCH"
+  curl -fsSL --retry 3 -k --pinnedpubkey "$PIN" -o "$DEST" "$HUB/download/monitorlab-agent-linux-$ARCH"
 else
-  curl -fsSL --retry 3 -o "$DEST" "$HUB/download/vigil-agent-linux-$ARCH"
+  curl -fsSL --retry 3 -o "$DEST" "$HUB/download/monitorlab-agent-linux-$ARCH"
 fi
 chmod 0755 "$DEST"
 

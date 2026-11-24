@@ -38,7 +38,7 @@ const bytesFmt = (v: number) => bytes(v, 0);
 const rateFmt = (v: number) => rate(v);
 
 function OverviewTab({ s }: { s: Server }) {
-  const [range, setRange] = useLocalStorage<Range>("vigil.range", "1h");
+  const [range, setRange] = useLocalStorage<Range>("monitorlab.range", "1h");
   const long = range === "7d" || range === "30d";
   const { data } = usePoll(() => api<MetricsResp>(`/servers/${s.id}/metrics?range=${range}`), [s.id, range], long ? 60_000 : 10_000);
   const m = s.latest;

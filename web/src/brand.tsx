@@ -5,7 +5,7 @@ interface BrandCtx {
   setName: (n: string) => void;
 }
 
-const DEFAULT = "Skien Monitoring";
+const DEFAULT = "MonitorLab";
 const Ctx = createContext<BrandCtx>({ name: DEFAULT, setName: () => {} });
 export const useBrand = () => useContext(Ctx);
 
@@ -13,7 +13,7 @@ export const useBrand = () => useContext(Ctx);
 export function BrandProvider({ children }: { children: ReactNode }) {
   const [name, setNameState] = useState<string>(() => {
     try {
-      return localStorage.getItem("vigil.brand") || DEFAULT;
+      return localStorage.getItem("monitorlab.brand") || DEFAULT;
     } catch {
       return DEFAULT;
     }
@@ -21,7 +21,7 @@ export function BrandProvider({ children }: { children: ReactNode }) {
   const setName = useCallback((n: string) => {
     setNameState(n);
     try {
-      localStorage.setItem("vigil.brand", n);
+      localStorage.setItem("monitorlab.brand", n);
     } catch {
       /* ignore */
     }

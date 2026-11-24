@@ -1,6 +1,6 @@
-# Vigil — Skien Monitoring
+# MonitorLab
 
-> *Vigil* is the code name used in binaries and paths (`vigil-hub`, `vigil-agent`, `/etc/vigil`). The product name shown to users defaults to **Skien Monitoring** and can be changed in **Settings → General** (or set `VIGIL_BRAND_NAME` before first start).
+> The name shown to users defaults to **MonitorLab** and can be changed in **Settings → General** (or with `MONITORLAB_BRAND_NAME` before the first start).
 
 Lightweight monitoring and operations for Linux and Windows servers: a **central hub** (one Docker container) plus a **tiny Rust agent** on each server.
 It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Portainer, without putting any of them on production machines.
@@ -37,15 +37,36 @@ It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Port
 ## Quick start (hub)
 
 ```bash
-docker build -t vigil-hub .          # builds UI, hub, Linux (static) and Windows agents
-# edit VIGIL_PUBLIC_URL / VIGIL_TLS_SANS in docker-compose.yml, then:
+docker build -t monitorlab-hub .          # builds UI, hub, Linux (static) and Windows agents
+# edit MONITORLAB_PUBLIC_URL / MONITORLAB_TLS_SANS in docker-compose.yml, then:
 docker compose up -d
-docker logs vigil                    # shows the generated admin password (once)
+docker logs monitorlab                    # shows the generated admin password (once)
 ```
 
 Open `https://<hub>:8443`, sign in, and set a new password. The hub generates a self-signed certificate on first start. Agents pin its SHA-256 fingerprint, so a self-signed certificate is safe for agent traffic. See [TLS](#tls) to use your own certificate.
 
-> Behind a registry mirror: `docker build --build-arg REGISTRY=mirror.gcr.io/library -t vigil-hub .`
+> Behind a registry mirror: `docker build --build-arg REGISTRY=mirror.gcr.io/library -t monitorlab-hub .`
+
+## Deploying with GitHub Actions (GAR + VM)
+
+`.github/workflows/deploy.yml` follows the same flow as the other Skien apps. It is started manually: **Actions → Build & Deploy MonitorLab → Run workflow**.
+
+1. **test**: builds the web console (TypeScript type-check plus the Vite build), then runs the Rust unit tests.
+2. **build-deploy**: builds the image, then **starts it on the runner and runs the 97-check end-to-end suite against it**. Only if that passes does it push `…/test-images/monitorlab:latest` and `:<sha>` to Artifact Registry, SSH to the VM (port 2232), `docker compose pull && up -d`, and wait for the hub's health check.
+
+It uses the same secrets: `GCP_SA_KEY`, `GCP_PROJECT_ID`, `VM_HOST`, `VM_USER` and `VM_SSH_KEY`. Add them to this repo, or give the org secrets access to it.
+
+**One-time VM setup:**
+
+```bash
+mkdir -p ~/docker/apps/monitorlab && cd ~/docker/apps/monitorlab
+# copy deploy/vm/docker-compose.yml and deploy/vm/.env.example from this repo
+cp .env.example .env && nano .env          # set MONITORLAB_IMAGE (your project id), PUBLIC_URL, admin email
+```
+
+* Open TCP **8443** in the GCP firewall for the servers that run agents (or use Nginx Proxy Manager, see `.env.example`).
+* After the first deploy, `docker logs monitorlab` shows the generated admin password.
+* To roll back, set `MONITORLAB_IMAGE=…/monitorlab:<old sha>` in `.env`, then `docker compose up -d`.
 
 ## Adding servers
 
@@ -58,26 +79,26 @@ curl -fsSL -k --pinnedpubkey 'sha256//…' https://hub:8443/download/install.sh 
   --hub https://hub:8443 --token <token> --fingerprint <AA:BB:…> --pin 'sha256//…'
 ```
 
-The installer creates a `vigil` system user (in the `docker` and `mssql` groups if they exist), writes `/etc/vigil/agent.toml` (mode 0600), and starts `vigil-agent.service`, capped at 256 MB of RAM by systemd.
+The installer creates a `monitorlab` system user (in the `docker` and `mssql` groups if they exist), writes `/etc/monitorlab/agent.toml` (mode 0600), and starts `monitorlab-agent.service`, capped at 256 MB of RAM by systemd.
 
-**Windows Server 2016–2025**: download `vigil-agent-windows-amd64.exe` from the dialog, then in an elevated PowerShell:
+**Windows Server 2016–2025**: download `monitorlab-agent-windows-amd64.exe` from the dialog, then in an elevated PowerShell:
 
 ```powershell
-.\vigil-agent-windows-amd64.exe install --hub https://hub:8443 --token <token> --fingerprint <AA:BB:…>
+.\monitorlab-agent-windows-amd64.exe install --hub https://hub:8443 --token <token> --fingerprint <AA:BB:…>
 ```
 
-This installs the `VigilAgent` service (LocalSystem, automatic start, restart on failure). The config goes to `C:\ProgramData\Vigil\agent.toml`, with ACLs restricted to SYSTEM and Administrators, and the log to `C:\ProgramData\Vigil\agent.log`.
+This installs the `MonitorLabAgent` service (LocalSystem, automatic start, restart on failure). The config goes to `C:\ProgramData\MonitorLab\agent.toml`, with ACLs restricted to SYSTEM and Administrators, and the log to `C:\ProgramData\MonitorLab\agent.log`.
 
-To uninstall an agent: `vigil-agent uninstall --purge` (Linux, with sudo) or `vigil-agent.exe uninstall --purge` (Windows, admin).
+To uninstall an agent: `monitorlab-agent uninstall --purge` (Linux, with sudo) or `monitorlab-agent.exe uninstall --purge` (Windows, admin).
 
 ### Optional: SQL Server DMV data
 
 Without credentials the agent shows service state, CPU/RAM, version and the error log. For databases, sizes, sessions and page life expectancy, add a read-only login:
 
 ```sql
-CREATE LOGIN vigil_monitor WITH PASSWORD = '…';
-GRANT VIEW SERVER STATE TO vigil_monitor;
-GRANT VIEW ANY DEFINITION TO vigil_monitor;
+CREATE LOGIN monitorlab_monitor WITH PASSWORD = '…';
+GRANT VIEW SERVER STATE TO monitorlab_monitor;
+GRANT VIEW ANY DEFINITION TO monitorlab_monitor;
 ```
 
 ```toml
@@ -85,7 +106,7 @@ GRANT VIEW ANY DEFINITION TO vigil_monitor;
 [mssql.connection]
 host = "127.0.0.1"
 port = 1433
-user = "vigil_monitor"
+user = "monitorlab_monitor"
 password = "…"
 trust_cert = true
 ```
@@ -109,11 +130,11 @@ The hub evaluates rules every 30 seconds for every server:
 **Channels** (Alert settings → Notification channels):
 
 * **Email** through your own mail server. Set the SMTP server once (host, port, STARTTLS/TLS, login, sender), then add email channels with any recipient lists. Example for your own domain: host `mail.skiensoftwarelab.com`, port 587 STARTTLS, user and from `alerts@skiensoftwarelab.com`. Tick "accept self-signed certificates" if the mail server uses an internal CA.
-* **Microsoft Teams**: a Workflows webhook ("Post to a channel when a webhook request is received"). Messages arrive as Adaptive Cards with an "Open in Vigil" button.
+* **Microsoft Teams**: a Workflows webhook ("Post to a channel when a webhook request is received"). Messages arrive as Adaptive Cards with an "Open in MonitorLab" button.
 * **Slack**, Google Chat or Mattermost incoming webhooks.
 * **Generic webhook**: a JSON POST (`event`, `severity`, `server`, `rule`, `message`, `started_at`, `link`), useful for PagerDuty or Opsgenie bridges and your own scripts.
 
-Each channel can receive everything or critical alerts only, and has a **Test** button. Set `VIGIL_PUBLIC_URL` so notifications link back to the right server page.
+Each channel can receive everything or critical alerts only, and has a **Test** button. Set `MONITORLAB_PUBLIC_URL` so notifications link back to the right server page.
 
 ## Users, roles and access
 
@@ -141,7 +162,7 @@ Safeguards: you can't delete, disable or demote the last administrator. Every st
 * Passwords are hashed with Argon2id; minimum 10 characters. New users and password resets force a change at the next sign-in.
 * Sessions are opaque random tokens stored hashed on the server, in an `HttpOnly; SameSite=Strict` cookie (`Secure` over TLS). They expire after 12 h idle (configurable) and 7 days at most. Changing a password signs out the user's other sessions.
 * Login throttling: per account (5 failures → 5 min lock) and per IP (20 → 15 min).
-* CSRF: state-changing requests require the `X-Vigil-Csrf` header plus a same-origin `Origin`. Browser WebSockets require a same-origin `Origin` to block cross-site WebSocket hijacking.
+* CSRF: state-changing requests require the `X-MonitorLab-Csrf` header plus a same-origin `Origin`. Browser WebSockets require a same-origin `Origin` to block cross-site WebSocket hijacking.
 * Security headers: strict CSP (no inline scripts), `frame-ancestors 'none'`, nosniff, and `no-referrer`.
 * Agent credentials: one-time enrollment token, then a 256-bit secret stored hashed on the hub. Removing a server revokes it immediately. Agents pin the hub certificate by SHA-256.
 * Agents never accept file paths or shell strings from the hub. Logs are addressed by logical ids (container, IIS site id, SQL instance) and resolved by the agent. IIS actions are validated against the live site and pool list, and run without a shell.
@@ -149,30 +170,30 @@ Safeguards: you can't delete, disable or demote the last administrator. Every st
 
 ## TLS
 
-| `VIGIL_TLS` | Behaviour |
+| `MONITORLAB_TLS` | Behaviour |
 |---|---|
 | `auto` (default) | self-signed cert in `/data/tls`, created on first start; agents pin its fingerprint |
-| `files` | use `VIGIL_TLS_CERT` / `VIGIL_TLS_KEY` (PEM); agents validate it against public CAs |
-| `off` | plain HTTP, for use behind a TLS-terminating reverse proxy; set `VIGIL_TRUST_PROXY=true`, `VIGIL_SECURE_COOKIES=true` and `VIGIL_PUBLIC_URL=https://…` |
+| `files` | use `MONITORLAB_TLS_CERT` / `MONITORLAB_TLS_KEY` (PEM); agents validate it against public CAs |
+| `off` | plain HTTP, for use behind a TLS-terminating reverse proxy; set `MONITORLAB_TRUST_PROXY=true`, `MONITORLAB_SECURE_COOKIES=true` and `MONITORLAB_PUBLIC_URL=https://…` |
 
 ## Hub configuration (environment)
 
 | Variable | Default | |
 |---|---|---|
-| `VIGIL_LISTEN` | `0.0.0.0:8443` | listen address |
-| `VIGIL_DATA_DIR` | `/data` | database, TLS material |
-| `VIGIL_PUBLIC_URL` | browser origin | URL shown in install commands |
-| `VIGIL_TLS`, `VIGIL_TLS_CERT`, `VIGIL_TLS_KEY`, `VIGIL_TLS_SANS` | `auto` | see TLS |
-| `VIGIL_ADMIN_EMAIL` / `VIGIL_ADMIN_PASSWORD` | `admin@vigil.local` / random | first start only |
-| `VIGIL_LOCAL_AGENT` | `true` | monitor the hub host |
-| `VIGIL_HOST_ROOT` | – | host `/` mounted read-only (e.g. `/host`) for real disk usage |
-| `VIGIL_RETENTION_RAW_DAYS` / `VIGIL_RETENTION_DAYS` | `3` / `90` | metrics retention |
-| `VIGIL_SESSION_IDLE_HOURS` | `12` | session idle timeout |
-| `VIGIL_TRUST_PROXY`, `VIGIL_SECURE_COOKIES` | `false` | reverse-proxy deployments |
-| `VIGIL_BRAND_NAME` | `Skien Monitoring` | product name until changed in Settings → General |
-| `VIGIL_LOG` | `info` | log filter, e.g. `debug,tower_http=info` |
+| `MONITORLAB_LISTEN` | `0.0.0.0:8443` | listen address |
+| `MONITORLAB_DATA_DIR` | `/data` | database, TLS material |
+| `MONITORLAB_PUBLIC_URL` | browser origin | URL shown in install commands |
+| `MONITORLAB_TLS`, `MONITORLAB_TLS_CERT`, `MONITORLAB_TLS_KEY`, `MONITORLAB_TLS_SANS` | `auto` | see TLS |
+| `MONITORLAB_ADMIN_EMAIL` / `MONITORLAB_ADMIN_PASSWORD` | `admin@monitorlab.local` / random | first start only |
+| `MONITORLAB_LOCAL_AGENT` | `true` | monitor the hub host |
+| `MONITORLAB_HOST_ROOT` | – | host `/` mounted read-only (e.g. `/host`) for real disk usage |
+| `MONITORLAB_RETENTION_RAW_DAYS` / `MONITORLAB_RETENTION_DAYS` | `3` / `90` | metrics retention |
+| `MONITORLAB_SESSION_IDLE_HOURS` | `12` | session idle timeout |
+| `MONITORLAB_TRUST_PROXY`, `MONITORLAB_SECURE_COOKIES` | `false` | reverse-proxy deployments |
+| `MONITORLAB_BRAND_NAME` | `MonitorLab` | product name until changed in Settings → General |
+| `MONITORLAB_LOG` | `info` | log filter, e.g. `debug,tower_http=info` |
 
-Back up the `vigil-data` volume (`vigil.db` and `tls/`). If you lose `tls/`, every agent must be re-enrolled, because they pin the old certificate.
+Back up the `monitorlab-data` volume (`monitorlab.db` and `tls/`). If you lose `tls/`, every agent must be re-enrolled, because they pin the old certificate.
 
 ## Agent configuration (`agent.toml`)
 
@@ -202,7 +223,7 @@ cargo test --workspace                      # unit tests (protocol, parsers, log
 
 # end-to-end regression suite against a running hub (uses Docker on this machine)
 pip install requests websockets
-python3 tests/e2e.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --agent-bin ./vigil-agent
+python3 tests/e2e.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --agent-bin ./monitorlab-agent
 
 # browser walk-through of every page (screenshots + fails on console errors)
 pip install playwright && python -m playwright install chromium
@@ -216,15 +237,15 @@ The e2e suite has 97 checks. It covers authentication hardening (CSRF, origin ch
 ```bash
 # hub + agent
 cargo test --workspace
-cargo build -p vigil-hub
-VIGIL_DATA_DIR=./dev-data VIGIL_LISTEN=127.0.0.1:8443 VIGIL_AGENTS_DIR=./target/debug ./target/debug/vigil-hub
+cargo build -p monitorlab-hub
+MONITORLAB_DATA_DIR=./dev-data MONITORLAB_LISTEN=127.0.0.1:8443 MONITORLAB_AGENTS_DIR=./target/debug ./target/debug/monitorlab-hub
 
 # web console with hot reload (proxies /api to the hub on :8443)
 cd web && npm install && npm run dev
 
 # Windows agent from Linux
 rustup target add x86_64-pc-windows-gnu && sudo apt install gcc-mingw-w64-x86-64
-cargo build -p vigil-agent --release --target x86_64-pc-windows-gnu
+cargo build -p monitorlab-agent --release --target x86_64-pc-windows-gnu
 ```
 
 Layout:

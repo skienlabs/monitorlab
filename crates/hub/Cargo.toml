@@ -1,11 +1,11 @@
 [package]
-name = "vigil-hub"
+name = "monitorlab-hub"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-vigil-common = { path = "../common" }
-vigil-agent = { path = "../agent" }
+monitorlab-common = { path = "../common" }
+monitorlab-agent = { path = "../agent" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

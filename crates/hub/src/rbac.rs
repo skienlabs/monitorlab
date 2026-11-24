@@ -2,7 +2,7 @@
 //! the `match` statements are exhaustive so new request types cannot be added unguarded.
 
 use serde::Serialize;
-use vigil_common::{Request, StreamRequest};
+use monitorlab_common::{Request, StreamRequest};
 
 pub const SERVERS_VIEW: &str = "servers.view";
 pub const DOCKER_VIEW: &str = "docker.view";

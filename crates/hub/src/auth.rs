@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::state::{ApiError, ApiResult, S};
 use crate::util::{now_ms, random_token, sha256_hex};
 
-pub const COOKIE_NAME: &str = "vigil_session";
+pub const COOKIE_NAME: &str = "monitorlab_session";
 const ABSOLUTE_SESSION_MS: i64 = 7 * 86_400_000;
 
 pub fn hash_password(pw: &str) -> anyhow::Result<String> {

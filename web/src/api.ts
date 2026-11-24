@@ -1,4 +1,4 @@
-// Thin API client. All state-changing calls carry X-Vigil-Csrf (checked by the hub).
+// Thin API client. All state-changing calls carry X-MonitorLab-Csrf (checked by the hub).
 
 export class ApiError extends Error {
   status: number;
@@ -21,7 +21,7 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   const res = await fetch(`/api${path}`, {
     method: opts.method ?? "GET",
     credentials: "same-origin",
-    headers: { "content-type": "application/json", "x-vigil-csrf": "1" },
+    headers: { "content-type": "application/json", "x-monitorlab-csrf": "1" },
     body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     signal: opts.signal,
   });

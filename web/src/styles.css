@@ -1,4 +1,4 @@
-/* Vigil design tokens — calm, Google-like surfaces; light and dark are each chosen, not inverted. */
+/* MonitorLab design tokens — calm, Google-like surfaces; light and dark are each chosen, not inverted. */
 :root {
   color-scheme: light;
   --font: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use vigil_common::{MssqlInstanceSummary, MssqlSummary};
+use monitorlab_common::{MssqlInstanceSummary, MssqlSummary};
 
 use crate::config::MssqlConfig;
 use crate::system::Collector;
@@ -291,7 +291,7 @@ mod query {
         config.host(&c.host);
         config.port(c.port);
         config.authentication(AuthMethod::sql_server(&c.user, &c.password));
-        config.application_name("vigil-agent");
+        config.application_name("monitorlab-agent");
         if c.trust_cert {
             config.trust_cert();
         }

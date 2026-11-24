@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use vigil_common::{AgentMsg, ContainerAction, ContainerStatsSample, DockerSummary, LogLine, PruneTarget, StreamData};
+use monitorlab_common::{AgentMsg, ContainerAction, ContainerStatsSample, DockerSummary, LogLine, PruneTarget, StreamData};
 
 use crate::session::StreamCtl;
 use crate::util::{b64, now_ms, truncate};

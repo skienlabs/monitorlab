@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
-use vigil_common::{IisPoolAction, IisSiteAction, IisSummary};
+use monitorlab_common::{IisPoolAction, IisSiteAction, IisSummary};
 
 use crate::system::Collector;
 use crate::util::{expand_env_vars, is_plain_file_name};

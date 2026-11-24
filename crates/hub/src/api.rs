@@ -12,7 +12,7 @@ use futures_util::SinkExt;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
-use vigil_common::{AgentHello, MetricsSample, Request, StreamRequest};
+use monitorlab_common::{AgentHello, MetricsSample, Request, StreamRequest};
 
 use crate::auth::{audit, hash_password, validate_password, AuditEntry, AuthUser};
 use crate::rbac;
@@ -374,7 +374,7 @@ pub async fn delete_server(State(state): State<S>, user: AuthUser, Path(id): Pat
     user.require(rbac::SERVERS_MANAGE)?;
     let row = get_server_row(&state, &user, &id).await?;
     if row.is_local {
-        return Err(ApiError::bad("The hub's own server cannot be removed (set VIGIL_LOCAL_AGENT=false to disable it)"));
+        return Err(ApiError::bad("The hub's own server cannot be removed (set MONITORLAB_LOCAL_AGENT=false to disable it)"));
     }
     let id2 = id.clone();
     state
@@ -398,16 +398,16 @@ pub async fn hub_info(State(state): State<S>, user: AuthUser) -> ApiResult<Json<
     let _ = user;
     let has = |f: &str| state.cfg.agents_dir.join(f).is_file();
     Ok(Json(json!({
-        "version": vigil_common::VERSION,
+        "version": monitorlab_common::VERSION,
         "tls": state.tls.is_some(),
         "self_signed": state.tls.as_ref().map(|t| t.self_signed).unwrap_or(false),
         "fingerprint": state.tls.as_ref().map(|t| t.fingerprint.clone()),
         "spki_pin": state.tls.as_ref().and_then(|t| t.spki_pin.clone()),
         "public_url": state.cfg.public_url,
         "downloads": {
-            "linux_amd64": has("vigil-agent-linux-amd64"),
-            "linux_arm64": has("vigil-agent-linux-arm64"),
-            "windows_amd64": has("vigil-agent-windows-amd64.exe"),
+            "linux_amd64": has("monitorlab-agent-linux-amd64"),
+            "linux_arm64": has("monitorlab-agent-linux-arm64"),
+            "windows_amd64": has("monitorlab-agent-windows-amd64.exe"),
         }
     })))
 }
@@ -419,7 +419,7 @@ pub async fn download(State(state): State<S>, Path(file): Path<String>) -> Respo
     if file == "install.sh" {
         return ([(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")], INSTALL_SH).into_response();
     }
-    const ALLOWED: &[&str] = &["vigil-agent-linux-amd64", "vigil-agent-linux-arm64", "vigil-agent-windows-amd64.exe"];
+    const ALLOWED: &[&str] = &["monitorlab-agent-linux-amd64", "monitorlab-agent-linux-arm64", "monitorlab-agent-windows-amd64.exe"];
     if !ALLOWED.contains(&file.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }

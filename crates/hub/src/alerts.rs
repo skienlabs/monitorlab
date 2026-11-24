@@ -10,7 +10,7 @@ use axum::Json;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use vigil_common::MetricsSample;
+use monitorlab_common::MetricsSample;
 
 use crate::auth::{audit, AuditEntry, AuthUser};
 use crate::rbac;
@@ -468,7 +468,7 @@ pub fn payload(kind: &str, ev: &Event, link: Option<String>, brand: &str) -> Val
             "message": ev.message,
             "started_at": ev.started_at,
             "link": link,
-            "source": "vigil",
+            "source": "monitorlab",
             "product": brand,
         }),
     }
@@ -502,7 +502,7 @@ async fn send(state: &S, ch: &Channel, ev: &Event) -> Result<()> {
         return send_email(&smtp, &recipients(&ch.url), &subject, text, html, &brand).await;
     }
     let body = payload(&ch.kind, ev, hub_link(state, &ev.server_id), &state.brand());
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).user_agent(format!("vigil-hub/{}", vigil_common::VERSION)).build()?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).user_agent(format!("monitorlab-hub/{}", monitorlab_common::VERSION)).build()?;
     let resp = client.post(&ch.url).json(&body).send().await?;
     let status = resp.status();
     if !status.is_success() {
@@ -922,7 +922,7 @@ pub async fn test_channel(State(state): State<S>, user: AuthUser, Path(id): Path
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vigil_common::{DiskInfo, DockerSummary, MssqlInstanceSummary, MssqlSummary};
+    use monitorlab_common::{DiskInfo, DockerSummary, MssqlInstanceSummary, MssqlSummary};
 
     fn sample() -> MetricsSample {
         MetricsSample { cpu: 50.0, mem_total: 100, mem_used: 50, ..Default::default() }
@@ -967,13 +967,13 @@ mod tests {
     #[test]
     fn payload_shapes() {
         let ev = Event { kind: "firing", severity: "critical", server_id: "x".into(), server: "web1".into(), rule: "cpu".into(), message: "CPU high".into(), started_at: 0 };
-        assert!(payload("teams", &ev, None, "Skien Monitoring")["attachments"][0]["content"]["body"].is_array());
-        assert!(payload("slack", &ev, Some("https://h/servers/x".into()), "Skien Monitoring")["text"].as_str().unwrap().contains("|open>"));
-        assert_eq!(payload("webhook", &ev, None, "Skien Monitoring")["severity"], "critical");
+        assert!(payload("teams", &ev, None, "MonitorLab")["attachments"][0]["content"]["body"].is_array());
+        assert!(payload("slack", &ev, Some("https://h/servers/x".into()), "MonitorLab")["text"].as_str().unwrap().contains("|open>"));
+        assert_eq!(payload("webhook", &ev, None, "MonitorLab")["severity"], "critical");
         assert_eq!(fmt_ts(0), "1970-01-01 00:00:00 UTC");
-        let (subj, text, html) = email_content(&ev, Some("https://h/servers/x".into()), "Skien Monitoring");
-        assert!(subj.starts_with("[Skien Monitoring] FIRING critical · web1"));
-        assert!(text.contains("Open in Skien Monitoring: https://h/servers/x"));
+        let (subj, text, html) = email_content(&ev, Some("https://h/servers/x".into()), "MonitorLab");
+        assert!(subj.starts_with("[MonitorLab] FIRING critical · web1"));
+        assert!(text.contains("Open in MonitorLab: https://h/servers/x"));
         assert!(html.contains("CPU high") && !html.contains("<script"));
         assert_eq!(recipients("a@x.com, b@y.com;\nc@z.com"), vec!["a@x.com", "b@y.com", "c@z.com"]);
         assert_eq!(fmt_ts(1_700_000_000_000), "2023-11-14 22:13:20 UTC");

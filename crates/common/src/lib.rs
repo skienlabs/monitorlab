@@ -1,4 +1,4 @@
-//! Shared wire protocol between the Vigil hub and its agents.
+//! Shared wire protocol between the MonitorLab hub and its agents.
 //!
 //! Transport: a single WebSocket per agent, opened *by the agent* (outbound only),
 //! carrying JSON text frames. The hub sends [`HubMsg`], the agent sends [`AgentMsg`].

@@ -82,8 +82,8 @@ mod tests {
 
     #[test]
     fn env_expansion() {
-        std::env::set_var("VIGIL_TEST_X", "C:");
-        assert_eq!(expand_env_vars("%VIGIL_TEST_X%\\inetpub"), "C:\\inetpub");
+        std::env::set_var("MONITORLAB_TEST_X", "C:");
+        assert_eq!(expand_env_vars("%MONITORLAB_TEST_X%\\inetpub"), "C:\\inetpub");
         assert_eq!(expand_env_vars("%NOPE_NOT_SET%\\a"), "%NOPE_NOT_SET%\\a");
         assert_eq!(expand_env_vars("100%"), "100%");
     }

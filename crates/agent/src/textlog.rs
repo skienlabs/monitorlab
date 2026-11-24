@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use vigil_common::{AgentMsg, LogLine, StreamData};
+use monitorlab_common::{AgentMsg, LogLine, StreamData};
 
 const MAX_LINE: usize = 32 * 1024;
 const MAX_CHUNK: u64 = 1024 * 1024;
@@ -235,7 +235,7 @@ mod tests {
     use std::io::Write;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vigil-test-{}-{}", std::process::id(), name));
+        let d = std::env::temp_dir().join(format!("monitorlab-test-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_file(&d);
         d
     }
