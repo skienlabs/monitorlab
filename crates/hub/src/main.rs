@@ -216,8 +216,53 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// `monitorlab-hub healthcheck`: used by the Docker HEALTHCHECK. Reads the same environment
+/// as the hub and probes its own /api/health. Exit code 0 = healthy.
+fn healthcheck() -> i32 {
+    let cfg = HubConfig::parse_from(["monitorlab-hub"]);
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let ip = if cfg.listen.ip().is_unspecified() {
+        if cfg.listen.is_ipv6() { "[::1]".to_string() } else { "127.0.0.1".to_string() }
+    } else if cfg.listen.is_ipv6() {
+        format!("[{}]", cfg.listen.ip())
+    } else {
+        cfg.listen.ip().to_string()
+    };
+    let scheme = if cfg.tls == config::TlsMode::Off { "http" } else { "https" };
+    let url = format!("{scheme}://{ip}:{}/api/health", cfg.listen.port());
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(_) => return 1,
+    };
+    rt.block_on(async {
+        // Local loopback probe of our own certificate, so certificate validation is skipped.
+        let client = match reqwest::Client::builder().danger_accept_invalid_certs(true).timeout(std::time::Duration::from_secs(5)).build() {
+            Ok(c) => c,
+            Err(_) => return 1,
+        };
+        match client.get(&url).send().await {
+            Ok(r) if r.status().is_success() => 0,
+            Ok(r) => {
+                eprintln!("unhealthy: {url} returned {}", r.status());
+                1
+            }
+            Err(e) => {
+                eprintln!("unhealthy: {url}: {e}");
+                1
+            }
+        }
+    })
+}
+
+fn main() -> Result<()> {
+    // Decide before any async runtime exists: the health probe builds its own small runtime.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(healthcheck());
+    }
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
+}
+
+async fn run() -> Result<()> {
     let cfg = HubConfig::parse();
     // One process-wide TLS crypto provider (ring) for every rustls user: hub TLS, webhooks, SMTP.
     let _ = rustls::crypto::ring::default_provider().install_default();

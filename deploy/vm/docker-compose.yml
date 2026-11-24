@@ -1,22 +1,41 @@
-# MonitorLab hub on the VM. Lives at ~/docker/apps/monitorlab/docker-compose.yml.
-# The GitHub Actions workflow runs `docker compose pull && docker compose up -d` here.
-# Settings come from .env next to this file (copy .env.example).
+# MonitorLab hub on the VM: ~/docker/apps/monitorlab/docker-compose.yml
+# GitHub Actions runs `docker compose pull && docker compose up -d` here.
+# Same layout as the other apps: on skiensuite-net, published through Nginx Proxy Manager.
+#
+# Nginx Proxy Manager → Proxy host:
+#   Domain:        monitorlab.skienlab.com      (DNS A record → this VM)
+#   Forward:       http   monitorlab   8090
+#   Websockets Support: ON  (required for live logs, terminal and agents)
+#   SSL:           Let's Encrypt, Force SSL, HTTP/2
+networks:
+  skiensuite-net:
+    name: skiensuite-net
+    external: true
+
 services:
   monitorlab:
-    image: ${MONITORLAB_IMAGE:?set MONITORLAB_IMAGE in .env}
+    image: us-central1-docker.pkg.dev/inspired-verve-293514/test-images/monitorlab:latest
     container_name: monitorlab
     restart: unless-stopped
-    # Host networking + PID namespace: the built-in agent sees the VM's real network
-    # counters and processes. The hub listens on :8443 (MONITORLAB_LISTEN to change).
-    network_mode: host
-    pid: host
-    env_file: .env
+    networks:
+      - skiensuite-net
     environment:
-      MONITORLAB_HOST_ROOT: /host
+      # TLS is terminated by Nginx Proxy Manager.
+      MONITORLAB_TLS: "off"
+      MONITORLAB_LISTEN: "0.0.0.0:8090"
+      MONITORLAB_TRUST_PROXY: "true"
+      MONITORLAB_SECURE_COOKIES: "true"
+      # Address users, agents and alert emails use:
+      MONITORLAB_PUBLIC_URL: "https://monitorlab.skienlab.com"
+      # First start only. Leave MONITORLAB_ADMIN_PASSWORD unset to get a generated
+      # password in `docker logs monitorlab` (must be changed at first sign-in).
+      MONITORLAB_ADMIN_EMAIL: "admin@skienlab.com"
+      # This container sits on a Docker network, so it cannot see the VM's real network
+      # traffic. Monitor the VM itself by installing the agent on it (see README).
+      MONITORLAB_LOCAL_AGENT: "false"
+      TZ: "Asia/Kolkata"
     volumes:
       - monitorlab-data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /:/host:ro
     logging:
       driver: json-file
       options:

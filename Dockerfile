@@ -45,5 +45,7 @@ ENV MONITORLAB_DATA_DIR=/data \
     MONITORLAB_AGENTS_DIR=/opt/monitorlab/agents
 VOLUME ["/data"]
 EXPOSE 8443
+HEALTHCHECK --interval=30s --timeout=8s --start-period=30s --start-interval=2s --retries=3 \
+  CMD ["/usr/local/bin/monitorlab-hub", "healthcheck"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/monitorlab-hub"]

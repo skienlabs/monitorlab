@@ -186,10 +186,10 @@ pub async fn server_rpc(State(state): State<S>, user: AuthUser, Path(id): Path<S
 
 // ------------------------------------------------------------------ browser streams (WebSocket)
 
-/// Reject cross-site WebSocket hijacking: the Origin must match the Host.
+/// Reject cross-site requests / WebSocket hijacking: the Origin must match the Host the browser
+/// used (or the forwarded host behind a trusted proxy, or MONITORLAB_PUBLIC_URL).
 pub fn same_origin(state: &S, headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else { return false };
-    let origin_host = origin.split_once("://").map(|(_, h)| h).unwrap_or(origin).trim_end_matches('/');
     let mut hosts: Vec<&str> = Vec::new();
     if let Some(h) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
         hosts.push(h);
@@ -199,7 +199,56 @@ pub fn same_origin(state: &S, headers: &HeaderMap) -> bool {
             hosts.push(h);
         }
     }
-    hosts.iter().any(|h| h.eq_ignore_ascii_case(origin_host))
+    origin_matches(origin, &hosts, state.cfg.public_url.as_deref())
+}
+
+/// "host[:port]" lower-cased with the scheme's default port made explicit.
+fn authority(host: &str, scheme: &str) -> String {
+    let h = host.trim().trim_end_matches('/').to_ascii_lowercase();
+    let has_port = if h.starts_with('[') { h.contains("]:") } else { h.contains(':') };
+    if has_port {
+        h
+    } else {
+        format!("{h}:{}", if scheme == "https" { 443 } else { 80 })
+    }
+}
+
+pub fn origin_matches(origin: &str, hosts: &[&str], public_url: Option<&str>) -> bool {
+    let Some((scheme, rest)) = origin.split_once("://") else { return false };
+    let scheme = scheme.to_ascii_lowercase();
+    let o = authority(rest, &scheme);
+    // A Host header without a port means the default port of the scheme the browser used.
+    if hosts.iter().any(|h| authority(h, &scheme) == o) {
+        return true;
+    }
+    if let Some((ps, prest)) = public_url.and_then(|u| u.split_once("://")) {
+        let ps = ps.to_ascii_lowercase();
+        let pauth = authority(prest.split('/').next().unwrap_or(""), &ps);
+        return ps == scheme && pauth == o;
+    }
+    false
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_matches;
+
+    #[test]
+    fn origins() {
+        // direct access
+        assert!(origin_matches("https://127.0.0.1:8443", &["127.0.0.1:8443"], None));
+        assert!(!origin_matches("https://evil.example", &["127.0.0.1:8443"], None));
+        assert!(!origin_matches("https://127.0.0.1:9999", &["127.0.0.1:8443"], None));
+        // behind a proxy that forwards Host without the default port (Nginx Proxy Manager)
+        assert!(origin_matches("https://monitorlab.skienlab.com", &["monitorlab.skienlab.com"], None));
+        assert!(origin_matches("https://MonitorLab.skienlab.com", &["monitorlab.skienlab.com:443"], None));
+        // proxy rewrote Host to the upstream; public URL vouches for the origin
+        assert!(origin_matches("https://monitorlab.skienlab.com", &["monitorlab:8090"], Some("https://monitorlab.skienlab.com/")));
+        assert!(!origin_matches("http://monitorlab.skienlab.com", &["monitorlab:8090"], Some("https://monitorlab.skienlab.com")));
+        assert!(!origin_matches("https://evil.example", &["monitorlab:8090"], Some("https://monitorlab.skienlab.com")));
+        assert!(!origin_matches("null", &["monitorlab:8090"], None));
+        assert!(origin_matches("http://[::1]:8080", &["[::1]:8080"], None));
+    }
 }
 
 #[derive(Deserialize)]

@@ -135,13 +135,17 @@ def main():
     ap.add_argument("--password", required=True)
     ap.add_argument("--agent-bin", help="monitorlab-agent binary for enrollment tests")
     ap.add_argument("--webhook-port", type=int, default=0, help="local port for the webhook sink (0 = random)")
+    ap.add_argument("--webhook-host", default="127.0.0.1",
+                    help="address the HUB uses to reach this machine's webhook sink "
+                         "(e.g. the Docker network gateway when the hub runs on a bridge network)")
     a = ap.parse_args()
     tag = "e2e-" + secrets.token_hex(3)
     hub = a.hub.rstrip("/")
 
-    srv = HTTPServer(("127.0.0.1", a.webhook_port), Hook)
+    bind = "127.0.0.1" if a.webhook_host in ("127.0.0.1", "localhost") else "0.0.0.0"
+    srv = HTTPServer((bind, a.webhook_port), Hook)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    hook_url = f"http://127.0.0.1:{srv.server_port}"
+    hook_url = f"http://{a.webhook_host}:{srv.server_port}"
 
     admin = Client(hub)
     created_containers, created_users, created_servers, created_channels, agent_procs = [], [], [], [], []

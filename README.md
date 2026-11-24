@@ -56,17 +56,20 @@ Open `https://<hub>:8443`, sign in, and set a new password. The hub generates a 
 
 It uses the same secrets: `GCP_SA_KEY`, `GCP_PROJECT_ID`, `VM_HOST`, `VM_USER` and `VM_SSH_KEY`. Add them to this repo, or give the org secrets access to it.
 
-**One-time VM setup:**
+**One-time setup** (same pattern as the Tasks app):
 
-```bash
-mkdir -p ~/docker/apps/monitorlab && cd ~/docker/apps/monitorlab
-# copy deploy/vm/docker-compose.yml and deploy/vm/.env.example from this repo
-cp .env.example .env && nano .env          # set MONITORLAB_IMAGE (your project id), PUBLIC_URL, admin email
-```
+1. **Deploy key**: on the VM as root:
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/gh_deploy_monitorlab -N "" -C "github-actions monitorlab"
+   cat ~/.ssh/gh_deploy_monitorlab.pub >> ~/.ssh/authorized_keys
+   cat ~/.ssh/gh_deploy_monitorlab          # → paste into the VM_SSH_KEY secret
+   ```
+2. **Compose file**: `mkdir -p ~/docker/apps/monitorlab`, then copy `deploy/vm/docker-compose.yml` there. Set `MONITORLAB_PUBLIC_URL` and `MONITORLAB_ADMIN_EMAIL`.
+3. **Nginx Proxy Manager**: add a proxy host for `monitorlab.skienlab.com` forwarding to `http` `monitorlab` `8090`, turn **Websockets Support on**, and add an SSL certificate (Let's Encrypt, Force SSL). Point the DNS A record at the VM.
+4. **Run the workflow.** After the first deploy, `docker logs monitorlab` shows the generated admin password.
+5. **Monitor the VM itself**: in MonitorLab, go to **Servers & agents → Add server** and run the Linux install command on the VM. The hub container sits on `skiensuite-net`, so the built-in agent is disabled (it couldn't see the VM's real network traffic).
 
-* Open TCP **8443** in the GCP firewall for the servers that run agents (or use Nginx Proxy Manager, see `.env.example`).
-* After the first deploy, `docker logs monitorlab` shows the generated admin password.
-* To roll back, set `MONITORLAB_IMAGE=…/monitorlab:<old sha>` in `.env`, then `docker compose up -d`.
+The workflow waits for the container's Docker health check to report `healthy`. To roll back, change the image tag in the compose file to `:<old sha>` and run `docker compose up -d`.
 
 ## Adding servers
 

@@ -131,14 +131,15 @@ jobs:
             docker compose pull
             docker compose up -d
             docker image prune -f
-            # Fail the workflow if the hub does not come back up.
-            for i in $(seq 1 30); do
-              if curl -skf https://127.0.0.1:8443/api/health >/dev/null || curl -sf http://127.0.0.1:8443/api/health >/dev/null; then
-                echo "MonitorLab is up"
+            # Fail the workflow if the hub does not report healthy (Docker HEALTHCHECK).
+            for i in $(seq 1 40); do
+              status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' monitorlab 2>/dev/null || echo missing)
+              if [ "$status" = "healthy" ]; then
+                echo "MonitorLab is healthy"
                 exit 0
               fi
-              sleep 2
+              sleep 3
             done
-            echo "MonitorLab did not become healthy" >&2
+            echo "MonitorLab did not become healthy (status: $status)" >&2
             docker compose logs --tail=100
             exit 1
