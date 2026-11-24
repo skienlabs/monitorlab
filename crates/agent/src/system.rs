@@ -49,6 +49,10 @@ fn skip_mount(mount: &str) -> bool {
 
 pub struct Collector {
     sys: System,
+    /// CPU-only instance for host CPU %, so its measuring window is always the full sample
+    /// period. (A process refresh re-reads CPU times after its /proc scan, which on hosts with
+    /// thousands of tasks would otherwise shrink the window to the scan time itself.)
+    cpu: System,
     nets: Networks,
     disks: Disks,
     disks_listed_at: Instant,
@@ -68,12 +72,14 @@ impl Collector {
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );
-        sys.refresh_cpu_usage();
         if with_processes {
             sys.refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind());
         }
+        let mut cpu = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()));
+        cpu.refresh_cpu_usage();
         let mut c = Self {
             sys,
+            cpu,
             nets: Networks::new_with_refreshed_list(),
             disks: Disks::new_with_refreshed_list(),
             disks_listed_at: Instant::now(),
@@ -162,9 +168,11 @@ impl Collector {
         let elapsed = self.last_at.elapsed().as_secs_f64().max(0.001);
         self.last_at = Instant::now();
 
-        self.sys.refresh_cpu_usage();
+        self.cpu.refresh_cpu_usage();
         self.sys.refresh_memory();
         if self.with_processes {
+            // Process CPU is measured against the CPU times sysinfo re-reads at the end of this
+            // scan, i.e. over the same period as the process times: do not refresh CPU on `sys`.
             self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind());
         }
         self.nets.refresh(true);
@@ -187,8 +195,8 @@ impl Collector {
 
         MetricsSample {
             ts: now_ms(),
-            cpu: finite(self.sys.global_cpu_usage()),
-            cpu_cores: self.sys.cpus().iter().map(|c| finite(c.cpu_usage())).collect(),
+            cpu: finite(self.cpu.global_cpu_usage()),
+            cpu_cores: self.cpu.cpus().iter().map(|c| finite(c.cpu_usage())).collect(),
             mem_total: self.sys.total_memory(),
             mem_used: self.sys.used_memory(),
             swap_total: self.sys.total_swap(),
@@ -335,7 +343,7 @@ impl Collector {
     }
 
     /// Detailed view for the server page: OS, interfaces, disks and top processes.
-    /// Takes two process snapshots ~500ms apart so CPU percentages are meaningful.
+    /// Takes two process snapshots ~1s apart so CPU percentages are meaningful.
     pub fn detail(host_root: Option<String>) -> Value {
         let mut sys = System::new_with_specifics(
             RefreshKind::nothing()
@@ -344,8 +352,9 @@ impl Collector {
         );
         let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_user(sysinfo::UpdateKind::OnlyIfNotSet);
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        sys.refresh_cpu_usage();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        // No separate CPU refresh here: sysinfo re-reads CPU times at the end of the process
+        // scan, so process CPU % covers the same period as the process times.
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
         let ncpu = sys.cpus().len().max(1) as f32;
 
