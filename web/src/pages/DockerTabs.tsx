@@ -1,10 +1,10 @@
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Box, ChevronDown, ChevronRight, CirclePause, CirclePlay, CircleStop, FileText, HardDrive, Layers, MoreVertical, Network, RefreshCw,
   RotateCcw, Skull, SquareTerminal, Trash2, Sparkles, Hammer,
 } from "lucide-react";
-import { rpc } from "../api";
+import { openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Container, Server } from "../types";
 import { Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast } from "../components/ui";
@@ -23,6 +23,90 @@ function Toolbar({ children, onRefresh, loading }: { children?: ReactNode; onRef
 }
 
 // =================================================================== containers
+
+interface LiveStat {
+  id: string;
+  cpu: number;
+  mem_used: number;
+  mem_limit: number;
+}
+interface LiveHist {
+  cpu: number[];
+  mem: number[];
+  last: LiveStat;
+}
+const HIST = 40; // samples kept per container (~80 s)
+
+/** Live CPU / memory of all running containers, streamed from the agent every 2 s. */
+function useContainerLive(serverId: string, enabled: boolean) {
+  const [hist, setHist] = useState<Record<string, LiveHist>>({});
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let timer: number | undefined;
+    const c = openStream(serverId, { kind: "container_stats_all" }, {
+      onData: (d) => {
+        if (d?.k !== "stats_all") return;
+        setHist((prev) => {
+          const next: Record<string, LiveHist> = {};
+          for (const it of d.items as LiveStat[]) {
+            const p = prev[it.id];
+            next[it.id] = {
+              cpu: [...(p?.cpu ?? []).slice(-(HIST - 1)), it.cpu],
+              mem: [...(p?.mem ?? []).slice(-(HIST - 1)), it.mem_used],
+              last: it,
+            };
+          }
+          return next;
+        });
+      },
+      onEnd: () => (timer = window.setTimeout(() => setRetry((r) => r + 1), 5000)),
+    });
+    return () => {
+      window.clearTimeout(timer);
+      c.close();
+    };
+  }, [serverId, enabled, retry]);
+  return hist;
+}
+
+function Spark({ values, max, color }: { values: number[]; max?: number; color: string }) {
+  const w = 72;
+  const h = 20;
+  if (values.length < 2) return <svg className="spark" width={w} height={h} aria-hidden />;
+  const top = Math.max(max ?? 0, ...values, 1e-9);
+  const step = w / (HIST - 1);
+  const x0 = w - (values.length - 1) * step;
+  const pts = values.map((v, i) => `${(x0 + i * step).toFixed(1)},${(h - 1 - (v / top) * (h - 3)).toFixed(1)}`).join(" ");
+  return (
+    <svg className="spark" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
+      <polyline points={pts} fill="none" stroke={`var(${color})`} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function LiveCells({ live, running }: { live?: LiveHist; running: boolean }) {
+  if (!running || !live)
+    return (
+      <>
+        <td className="small faint">{running ? "…" : "—"}</td>
+        <td className="small faint">{running ? "…" : "—"}</td>
+      </>
+    );
+  const l = live.last;
+  return (
+    <>
+      <td className="nowrap live-cell" title="100% = one full CPU core (same as docker stats)">
+        <Spark values={live.cpu} max={5} color="--accent-cpu" />
+        <span className="tnum small">{l.cpu < 10 ? l.cpu.toFixed(1) : Math.round(l.cpu)}%</span>
+      </td>
+      <td className="nowrap live-cell" title={l.mem_limit ? `Limit ${bytes(l.mem_limit)}` : undefined}>
+        <Spark values={live.mem} max={16 * 1024 * 1024} color="--accent-mem" />
+        <span className="tnum small">{bytes(l.mem_used)}</span>
+      </td>
+    </>
+  );
+}
 
 export function useContainerActions(serverId: string, reload: () => void) {
   const toast = useToast();
@@ -106,7 +190,7 @@ function Ports({ c }: { c: Container }) {
   );
 }
 
-function ContainerRow({ c, s, actions }: { c: Container; s: Server; actions: ReturnType<typeof useContainerActions> }) {
+function ContainerRow({ c, s, actions, live }: { c: Container; s: Server; actions: ReturnType<typeof useContainerActions>; live?: LiveHist }) {
   const { can } = useAuth();
   const nav = useNavigate();
   const running = c.state === "running";
@@ -131,6 +215,7 @@ function ContainerRow({ c, s, actions }: { c: Container; s: Server; actions: Ret
         <StateChip state={c.state} health={c.health} />
         <div className="small faint" style={{ marginTop: 2 }}>{c.status}</div>
       </td>
+      <LiveCells live={live} running={c.state === "running"} />
       <td>
         <Ports c={c} />
       </td>
@@ -200,21 +285,29 @@ export function ContainersTab({ s }: { s: Server }) {
   const [q, setQ] = useState("");
   const [state, setState] = useState<"all" | "running" | "stopped">("all");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [sort, setSort] = useState<"name" | "cpu" | "mem">("name");
   const actions = useContainerActions(s.id, reload);
+  const live = useContainerLive(s.id, s.online);
 
   const groups = useMemo(() => {
     const needle = q.trim().toLowerCase();
+    const metric = (c: Container) => {
+      const l = live[c.id]?.last;
+      return l ? (sort === "cpu" ? l.cpu : l.mem_used) : -1;
+    };
     const list = (data ?? [])
       .filter((c) => (state === "all" ? true : state === "running" ? c.state === "running" : c.state !== "running"))
       .filter((c) => !needle || [c.name, c.image, c.project, c.service, c.id].some((x) => x?.toLowerCase().includes(needle)))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => (sort === "name" ? a.name.localeCompare(b.name) : metric(b) - metric(a) || a.name.localeCompare(b.name)));
+    // Sorting by usage shows one flat list, so the heaviest containers are on top.
+    if (sort !== "name") return [["", list]] as [string, Container[]][];
     const map = new Map<string, Container[]>();
     for (const c of list) {
       const k = c.project ?? "";
       map.set(k, [...(map.get(k) ?? []), c]);
     }
     return [...map.entries()].sort((a, b) => (a[0] === "" ? 1 : b[0] === "" ? -1 : a[0].localeCompare(b[0])));
-  }, [data, q, state]);
+  }, [data, q, state, sort, live]);
 
   if (!s.online) return <Empty icon={<Box size={26} />} title="Server is offline">Container information is live and needs the agent to be connected.</Empty>;
   if (!data && !error) return <Loading />;
@@ -244,9 +337,11 @@ export function ContainersTab({ s }: { s: Server }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Name</th>
+                  <SortTh active={sort === "name"} onClick={() => setSort("name")}>Name</SortTh>
                   <th>Image</th>
                   <th>State</th>
+                  <SortTh active={sort === "cpu"} onClick={() => setSort(sort === "cpu" ? "name" : "cpu")}>CPU</SortTh>
+                  <SortTh active={sort === "mem"} onClick={() => setSort(sort === "mem" ? "name" : "mem")}>Memory</SortTh>
                   <th>Ports</th>
                   <th>Created</th>
                   <th />
@@ -254,14 +349,14 @@ export function ContainersTab({ s }: { s: Server }) {
               </thead>
               <tbody>
                 {groups.map(([project, list]) => {
-                  const showHeader = groups.length > 1 || project !== "";
+                  const showHeader = sort === "name" && (groups.length > 1 || project !== "");
                   const isCollapsed = collapsed[project];
                   const up = list.filter((c) => c.state === "running").length;
                   return (
                     <GroupRows key={project || "_"}>
                       {showHeader && (
                         <tr className="group-row" onClick={() => setCollapsed((m) => ({ ...m, [project]: !m[project] }))}>
-                          <td colSpan={6}>
+                          <td colSpan={8}>
                             <span className="row">
                               {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                               {project ? <Layers size={15} /> : <Box size={15} />}
@@ -273,7 +368,7 @@ export function ContainersTab({ s }: { s: Server }) {
                           </td>
                         </tr>
                       )}
-                      {!isCollapsed && list.map((c) => <ContainerRow key={c.id} c={c} s={s} actions={actions} />)}
+                      {!isCollapsed && list.map((c) => <ContainerRow key={c.id} c={c} s={s} actions={actions} live={live[c.id]} />)}
                     </GroupRows>
                   );
                 })}
@@ -283,6 +378,15 @@ export function ContainersTab({ s }: { s: Server }) {
         )}
       </div>
     </div>
+  );
+}
+
+function SortTh({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <th className={`sortable ${active ? "sorted" : ""}`} onClick={onClick} aria-sort={active ? "descending" : "none"}>
+      {children}
+      {active && <ChevronDown size={14} style={{ verticalAlign: "-2px", marginLeft: 2 }} />}
+    </th>
   );
 }
 

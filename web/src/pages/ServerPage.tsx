@@ -1,9 +1,9 @@
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Box, ChevronRight, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
-import { api, rpc } from "../api";
+import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
-import type { Server } from "../types";
+import type { Metrics, Server } from "../types";
 import { ErrorBanner, Loading, Meter, Seg, Spinner, StatusChip, useLocalStorage, usePoll } from "../components/ui";
 import { TimeChart } from "../components/Chart";
 import { OsIcon } from "../components/OsIcon";
@@ -21,9 +21,9 @@ interface MetricsResp {
   series: Record<string, (number | null)[]>;
 }
 
-export function ChartCard({ title, now, children }: { title: string; now?: ReactNode; children: ReactNode }) {
+export function ChartCard({ title, now, accent, children }: { title: string; now?: ReactNode; accent?: string; children: ReactNode }) {
   return (
-    <div className="card chart-card">
+    <div className="card chart-card" data-accent={accent}>
       <div className="chart-head">
         <h3>{title}</h3>
         {now != null && <div className="now">{now}</div>}
@@ -37,14 +37,71 @@ const pctFmt = (v: number) => `${Math.round(v)}%`;
 const bytesFmt = (v: number) => bytes(v, 0);
 const rateFmt = (v: number) => rate(v);
 
+const RANGE_SECS: Record<Range, number> = { "15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000 };
+const LIVE_MS = 2000;
+
+/** Live system samples (every 2 s) streamed straight from the agent while the page is open. */
+function useLiveSamples(serverId: string, online: boolean) {
+  const [samples, setSamples] = useState<Metrics[]>([]);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!online) return;
+    let timer: number | undefined;
+    const c = openStream(serverId, { kind: "system_live", interval_ms: LIVE_MS }, {
+      onData: (d) => {
+        if (d?.k !== "live") return;
+        const cutoff = Date.now() - 3_600_000;
+        setSamples((prev) => [...prev.filter((p) => p.ts >= cutoff), d as Metrics]);
+      },
+      // Reconnect after an agent restart / network blip.
+      onEnd: () => (timer = window.setTimeout(() => setRetry((r) => r + 1), 5000)),
+    });
+    return () => {
+      window.clearTimeout(timer);
+      c.close();
+    };
+  }, [serverId, online, retry]);
+  useEffect(() => setSamples([]), [serverId]);
+  return samples;
+}
+
+const LIVE_KEYS: Record<string, (m: Metrics) => number | null> = {
+  cpu: (m) => m.cpu,
+  mem_pct: (m) => (m.mem_total > 0 ? (m.mem_used / m.mem_total) * 100 : null),
+  mem_used: (m) => m.mem_used,
+  net_rx: (m) => m.net_rx_bps,
+  net_tx: (m) => m.net_tx_bps,
+  disk_read: (m) => m.disk_read_bps,
+  disk_write: (m) => m.disk_write_bps,
+};
+
 function OverviewTab({ s }: { s: Server }) {
   const [range, setRange] = useLocalStorage<Range>("monitorlab.range", "1h");
   const long = range === "7d" || range === "30d";
-  const { data } = usePoll(() => api<MetricsResp>(`/servers/${s.id}/metrics?range=${range}`), [s.id, range], long ? 60_000 : 10_000);
-  const m = s.latest;
+  const { data } = usePoll(() => api<MetricsResp>(`/servers/${s.id}/metrics?range=${range}`), [s.id, range], long ? 60_000 : 15_000);
+  const live = useLiveSamples(s.id, s.online);
+  const last = live[live.length - 1];
+  // Live values for the headline numbers; Docker/SQL/IIS summaries still come from the periodic sample.
+  const m: Metrics | null = s.latest && last && last.ts > s.latest.ts ? { ...last, process_count: s.latest.process_count, docker: s.latest.docker, mssql: s.latest.mssql, iis: s.latest.iis } : s.latest;
   const h = s.hello;
-  const ts = data?.ts ?? [];
-  const ser = data?.series ?? {};
+  // Short ranges: stored history followed by the live 2-second samples, as a sliding window.
+  const { ts, ser } = useMemo(() => {
+    const hts = data?.ts ?? [];
+    const hser = data?.series ?? {};
+    if (!(range === "15m" || range === "1h") || live.length === 0) return { ts: hts, ser: hser };
+    const lastHist = hts.length ? hts[hts.length - 1] : 0;
+    const add = live.filter((x) => x.ts / 1000 > lastHist);
+    const from = Date.now() / 1000 - RANGE_SECS[range];
+    const start = hts.findIndex((t) => t >= from);
+    const cut = start < 0 ? hts.length : start;
+    const outTs = [...hts.slice(cut), ...add.map((x) => x.ts / 1000)];
+    const out: Record<string, (number | null)[]> = {};
+    for (const k of new Set([...Object.keys(hser), ...Object.keys(LIVE_KEYS)])) {
+      const f = LIVE_KEYS[k];
+      out[k] = [...(hser[k] ?? new Array(hts.length).fill(null)).slice(cut), ...add.map((x) => (f ? f(x) : null))];
+    }
+    return { ts: outTs, ser: out };
+  }, [data, live, range]);
   const col = (k: string) => ser[k] ?? [];
   const hasMssql = !!m?.mssql;
   const hasIis = !!m?.iis;
@@ -52,7 +109,7 @@ function OverviewTab({ s }: { s: Server }) {
   return (
     <div className="col" style={{ gap: 16 }}>
       <div className="grid grid-4">
-        <div className="card kpi">
+        <div className="card kpi" data-accent="cpu">
           <div className="label">
             <Cpu size={16} /> CPU
           </div>
@@ -62,7 +119,7 @@ function OverviewTab({ s }: { s: Server }) {
             {h?.cpu_cores} logical cores{m?.load ? ` · load ${m.load.map((l) => l.toFixed(2)).join(" ")}` : ""}
           </div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="mem">
           <div className="label">
             <Layers size={16} /> Memory
           </div>
@@ -73,7 +130,7 @@ function OverviewTab({ s }: { s: Server }) {
           <Meter value={m ? ratio(m.mem_used, m.mem_total) : 0} warn={90} crit={95} />
           <div className="foot">{m && m.swap_total > 0 ? `Swap ${bytes(m.swap_used)} of ${bytes(m.swap_total)}` : "No swap"}</div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="net">
           <div className="label">
             <Network size={16} /> Network
           </div>
@@ -85,7 +142,7 @@ function OverviewTab({ s }: { s: Server }) {
           </div>
           <div className="foot">Physical interfaces only</div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="up">
           <div className="label">
             <Activity size={16} /> Uptime
           </div>
@@ -100,13 +157,13 @@ function OverviewTab({ s }: { s: Server }) {
       </div>
 
       <div className="grid grid-2">
-        <ChartCard title="CPU usage" now={pct(m?.cpu)}>
-          <TimeChart ts={ts} series={[{ label: "CPU", values: col("cpu"), color: "--series-1" }]} fmt={pctFmt} yMax={100} />
+        <ChartCard title="CPU usage" accent="cpu" now={pct(m?.cpu)}>
+          <TimeChart ts={ts} series={[{ label: "CPU", values: col("cpu"), color: "--accent-cpu" }]} fmt={pctFmt} yMax={100} />
         </ChartCard>
-        <ChartCard title="Memory usage" now={m ? pct(ratio(m.mem_used, m.mem_total)) : "—"}>
-          <TimeChart ts={ts} series={[{ label: "Memory", values: col("mem_pct"), color: "--series-1" }]} fmt={pctFmt} yMax={100} />
+        <ChartCard title="Memory usage" accent="mem" now={m ? pct(ratio(m.mem_used, m.mem_total)) : "—"}>
+          <TimeChart ts={ts} series={[{ label: "Memory", values: col("mem_pct"), color: "--accent-mem" }]} fmt={pctFmt} yMax={100} />
         </ChartCard>
-        <ChartCard title="Network throughput">
+        <ChartCard title="Network throughput" accent="net">
           <TimeChart
             ts={ts}
             series={[
@@ -117,7 +174,7 @@ function OverviewTab({ s }: { s: Server }) {
             minTop={1024}
           />
         </ChartCard>
-        <ChartCard title="Disk I/O">
+        <ChartCard title="Disk I/O" accent="disk">
           <TimeChart
             ts={ts}
             series={[
@@ -130,21 +187,21 @@ function OverviewTab({ s }: { s: Server }) {
         </ChartCard>
         {hasMssql && (
           <>
-            <ChartCard title="SQL Server CPU" now={pct(m?.mssql?.instances.reduce((a, i) => a + i.cpu, 0))}>
-              <TimeChart ts={ts} series={[{ label: "SQL Server", values: col("mssql_cpu"), color: "--series-1" }]} fmt={pctFmt} yMax={100} />
+            <ChartCard title="SQL Server CPU" accent="sql" now={pct(m?.mssql?.instances.reduce((a, i) => a + i.cpu, 0))}>
+              <TimeChart ts={ts} series={[{ label: "SQL Server", values: col("mssql_cpu"), color: "--accent-sql" }]} fmt={pctFmt} yMax={100} />
             </ChartCard>
-            <ChartCard title="SQL Server memory" now={bytes(m?.mssql?.instances.reduce((a, i) => a + i.mem, 0))}>
-              <TimeChart ts={ts} series={[{ label: "SQL Server", values: col("mssql_mem"), color: "--series-1" }]} fmt={bytesFmt} minTop={1048576} />
+            <ChartCard title="SQL Server memory" accent="sql" now={bytes(m?.mssql?.instances.reduce((a, i) => a + i.mem, 0))}>
+              <TimeChart ts={ts} series={[{ label: "SQL Server", values: col("mssql_mem"), color: "--accent-sql" }]} fmt={bytesFmt} minTop={1048576} />
             </ChartCard>
           </>
         )}
         {hasIis && (
           <>
-            <ChartCard title="IIS worker CPU" now={pct(m?.iis?.worker_cpu)}>
-              <TimeChart ts={ts} series={[{ label: "w3wp", values: col("iis_cpu"), color: "--series-1" }]} fmt={pctFmt} yMax={100} />
+            <ChartCard title="IIS worker CPU" accent="docker" now={pct(m?.iis?.worker_cpu)}>
+              <TimeChart ts={ts} series={[{ label: "w3wp", values: col("iis_cpu"), color: "--accent-docker" }]} fmt={pctFmt} yMax={100} />
             </ChartCard>
-            <ChartCard title="IIS worker memory" now={bytes(m?.iis?.worker_mem)}>
-              <TimeChart ts={ts} series={[{ label: "w3wp", values: col("iis_mem"), color: "--series-1" }]} fmt={bytesFmt} minTop={1048576} />
+            <ChartCard title="IIS worker memory" accent="docker" now={bytes(m?.iis?.worker_mem)}>
+              <TimeChart ts={ts} series={[{ label: "w3wp", values: col("iis_mem"), color: "--accent-docker" }]} fmt={bytesFmt} minTop={1048576} />
             </ChartCard>
           </>
         )}
@@ -300,7 +357,7 @@ export function ServerPage() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const { can } = useAuth();
-  const { data: s, error, reload } = usePoll(() => api<Server>(`/servers/${id}`), [id], 10_000);
+  const { data: s, error, reload } = usePoll(() => api<Server>(`/servers/${id}`), [id], 5_000);
 
   const tabs = useMemo(() => {
     const caps = s?.hello?.capabilities;

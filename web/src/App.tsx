@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { Activity, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, SunMoon, UserRound, Users } from "lucide-react";
+import { Activity, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, UserRound, Users } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
 import { BrandFooter, BrandProvider, useBrand } from "./brand";
 import { GeneralSettings } from "./pages/GeneralSettings";
@@ -22,10 +22,11 @@ import { useAlertCount } from "./servers";
 
 function ThemeToggle() {
   const { mode, setMode } = useTheme();
-  const next = mode === "light" ? "dark" : mode === "dark" ? "system" : "light";
-  const Icon = mode === "light" ? Sun : mode === "dark" ? Moon : SunMoon;
+  const next = mode === "light" ? "dark" : "light";
+  const Icon = mode === "light" ? Moon : Sun;
+  const label = next === "dark" ? "Switch to AMOLED Black" : "Switch to Light";
   return (
-    <button className="icon-btn" onClick={() => setMode(next)} title={`Theme: ${mode} (click for ${next})`} aria-label="Toggle theme">
+    <button className="icon-btn" onClick={() => setMode(next)} title={label} aria-label={label}>
       <Icon size={20} />
     </button>
   );
@@ -60,11 +61,11 @@ function Nav({ open }: { open: boolean }) {
   const alertCount = useAlertCount();
   return (
     <nav className={`nav ${open ? "open" : ""}`} aria-label="Main">
-      <NavLink to="/" end>
+      <NavLink to="/" end data-accent="cpu">
         <LayoutGrid size={20} /> Overview
         {servers && <span className="count">{online}/{servers.length}</span>}
       </NavLink>
-      <NavLink to="/alerts">
+      <NavLink to="/alerts" data-accent="alert">
         <Bell size={20} /> Alerts
         {alertCount > 0 && <span className="count" style={{ color: "var(--crit-text)", fontWeight: 600 }}>{alertCount}</span>}
       </NavLink>
@@ -77,35 +78,35 @@ function Nav({ open }: { open: boolean }) {
       ))}
       {(can("servers.manage") || can("users.manage") || can("audit.view") || can("alerts.manage")) && <div className="nav-section">Administration</div>}
       {can("alerts.manage") && (
-        <NavLink to="/admin/alerts">
+        <NavLink to="/admin/alerts" data-accent="up">
           <BellRing size={20} /> Alert settings
         </NavLink>
       )}
       {can("servers.manage") && (
-        <NavLink to="/admin/servers">
+        <NavLink to="/admin/servers" data-accent="docker">
           <ServerIcon size={20} /> Servers & agents
         </NavLink>
       )}
       {can("users.manage") && (
         <>
-          <NavLink to="/admin/general">
+          <NavLink to="/admin/general" data-accent="mem">
             <SlidersHorizontal size={20} /> General
           </NavLink>
-          <NavLink to="/admin/users">
+          <NavLink to="/admin/users" data-accent="users">
             <Users size={20} /> Users
           </NavLink>
-          <NavLink to="/admin/roles">
+          <NavLink to="/admin/roles" data-accent="net">
             <ShieldCheck size={20} /> Roles
           </NavLink>
         </>
       )}
       {can("audit.view") && (
-        <NavLink to="/admin/audit">
+        <NavLink to="/admin/audit" data-accent="audit">
           <ScrollText size={20} /> Audit log
         </NavLink>
       )}
       <div className="nav-section">You</div>
-      <NavLink to="/account">
+      <NavLink to="/account" data-accent="disk">
         <UserRound size={20} /> Account
       </NavLink>
       <BrandFooter />

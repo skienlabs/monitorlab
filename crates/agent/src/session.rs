@@ -308,6 +308,7 @@ impl Agent {
                 self.docker()?.exec(&id, cmd, user, cols, rows, sid, out, ctl).await
             }
             StreamRequest::ContainerStats { id } => self.docker()?.stream_stats(&id, sid, out).await,
+            StreamRequest::ContainerStatsAll {} => self.docker()?.stream_stats_all(sid, out).await,
             StreamRequest::SystemLive { interval_ms } => {
                 let interval = Duration::from_millis(interval_ms.clamp(1000, 60_000) as u64);
                 let root = self.opts.host_root.clone();

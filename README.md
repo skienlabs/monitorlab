@@ -205,7 +205,7 @@ hub_url = "https://hub:8443"
 agent_id = "…"            # written by `install`
 secret = "…"
 fingerprint = "AA:BB:…"   # optional pin
-interval_secs = 10        # metrics period (2–300)
+interval_secs = 5         # metrics period (2–300)
 
 [docker]
 enabled = true

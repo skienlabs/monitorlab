@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Box, Database, Globe, Plus, ServerCog, ServerOff } from "lucide-react";
+import { Box, CircleCheck, CloudOff, Database, Globe, Plus, Server as ServerIcon, ServerCog, ServerOff, TriangleAlert } from "lucide-react";
 import { useServers } from "../servers";
 import { useAuth } from "../auth";
 import { ErrorBanner, Loading, Meter, SearchBox, Seg, StatusChip } from "../components/ui";
@@ -121,7 +121,7 @@ export function Overview() {
       <div className="page-head">
         <div className="grow">
           <h1>Overview</h1>
-          <div className="sub">All monitored servers, refreshed every 10 seconds</div>
+          <div className="sub">All monitored servers, refreshed every 5 seconds</div>
         </div>
         {can("servers.manage") && (
           <Link to="/admin/servers?add=1" className="btn filled">
@@ -132,25 +132,27 @@ export function Overview() {
       {error && <ErrorBanner error={error} onRetry={reload} />}
 
       <div className="grid grid-4" style={{ marginBottom: 24 }}>
-        <div className="card kpi">
-          <div className="label">Servers</div>
+        <div className="card kpi" data-accent="cpu">
+          <div className="label">
+            <ServerIcon size={16} /> Servers
+          </div>
           <div className="value">{counts.total}</div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="good">
           <div className="label">
-            <span className="dot good" /> Healthy
+            <CircleCheck size={16} /> Healthy
           </div>
           <div className="value">{counts.ok}</div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="warn">
           <div className="label">
-            <span className="dot warn" /> Need attention
+            <TriangleAlert size={16} /> Need attention
           </div>
           <div className="value">{counts.warn}</div>
         </div>
-        <div className="card kpi">
+        <div className="card kpi" data-accent="muted">
           <div className="label">
-            <span className="dot" /> Offline / pending
+            <CloudOff size={16} /> Offline / pending
           </div>
           <div className="value">{counts.offline}</div>
         </div>

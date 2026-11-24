@@ -220,6 +220,9 @@ def main():
         check("live container stats", isinstance(out, list) and any(msg["t"] == "data" and msg["d"]["k"] == "stats" for msg in out), out)
         out = stream(hub, admin.cookie(), sid, {"kind": "system_live", "interval_ms": 1000}, dur=2.5)
         check("live system stream", isinstance(out, list) and len(out) >= 1, out)
+        out = stream(hub, admin.cookie(), sid, {"kind": "container_stats_all"}, dur=4.5)
+        batches = [msg["d"] for msg in out if msg["t"] == "data" and msg["d"].get("k") == "stats_all"] if isinstance(out, list) else []
+        check("live stats for all containers", any(any(i["id"].startswith(cid) or i["id"] == cid for i in b["items"]) for b in batches) if (cid := next((c["id"] for c in admin.post(f"/servers/{sid}/rpc", {"op": "docker_containers"})[1] if c["name"] == cname), None)) else False, out)
         out = stream(hub, admin.cookie(), sid, {"kind": "system_live"}, origin="https://evil.example", dur=1)
         check("cross-origin WebSocket rejected", isinstance(out, str) and "403" in out, out)
         for action in ["restart", "pause", "unpause", "stop", "start"]:

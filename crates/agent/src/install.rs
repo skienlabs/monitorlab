@@ -26,7 +26,7 @@ pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
         agent_id,
         secret,
         fingerprint: args.fingerprint.clone().filter(|f| !f.trim().is_empty()),
-        interval_secs: 10,
+        interval_secs: 5,
         docker: DockerConfig::default(),
         mssql: MssqlConfig::default(),
         iis: IisConfig::default(),

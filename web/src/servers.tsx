@@ -14,7 +14,7 @@ export const useServers = () => useContext(C);
 
 /** Server list shared by the navigation rail and the overview, refreshed every 10s. */
 export function ServersProvider({ children }: { children: ReactNode }) {
-  const { data, error, reload } = usePoll(() => api<Server[]>("/servers"), [], 10_000);
+  const { data, error, reload } = usePoll(() => api<Server[]>("/servers"), [], 5_000);
   return <C.Provider value={{ servers: data, error, reload }}>{children}</C.Provider>;
 }
 

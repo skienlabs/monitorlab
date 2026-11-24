@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "monitorlab-agent"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1587,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "monitorlab-common"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "monitorlab-hub"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "argon2",

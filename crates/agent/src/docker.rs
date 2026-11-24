@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use monitorlab_common::{AgentMsg, ContainerAction, ContainerStatsSample, DockerSummary, LogLine, PruneTarget, StreamData};
+use monitorlab_common::{AgentMsg, ContainerAction, ContainerLiveStat, ContainerStatsSample, DockerSummary, LogLine, PruneTarget, StreamData};
 
 use crate::session::StreamCtl;
 use crate::util::{b64, now_ms, truncate};
@@ -573,6 +573,74 @@ impl DockerCtl {
             out.send(AgentMsg::Stream { sid, data: StreamData::Stats(sample) }).await.map_err(|_| anyhow!("closed"))?;
         }
         Ok(())
+    }
+
+    /// One stats stream per running container (as `docker stats` does), batched every 2 s.
+    /// The container set is re-listed every 10 s; all per-container tasks stop with the stream.
+    pub async fn stream_stats_all(&self, sid: u64, out: &mpsc::Sender<AgentMsg>) -> Result<()> {
+        struct Tasks(HashMap<String, tokio::task::JoinHandle<()>>);
+        impl Drop for Tasks {
+            fn drop(&mut self) {
+                for (_, t) in self.0.drain() {
+                    t.abort();
+                }
+            }
+        }
+        let latest: std::sync::Arc<std::sync::Mutex<HashMap<String, ContainerLiveStat>>> = Default::default();
+        let mut tasks = Tasks(HashMap::new());
+        let mut tick = tokio::time::interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut listed: Option<std::time::Instant> = None;
+        let mut first = true;
+        loop {
+            tick.tick().await;
+            if listed.map(|t| t.elapsed() >= Duration::from_secs(10)).unwrap_or(true) {
+                listed = Some(std::time::Instant::now());
+                let running: HashSet<String> = self
+                    .d
+                    .list_containers(Some(ListContainersOptions::<String> { all: false, ..Default::default() }))
+                    .await?
+                    .into_iter()
+                    .filter_map(|c| c.id)
+                    .collect();
+                tasks.0.retain(|id, t| {
+                    let keep = running.contains(id) && !t.is_finished();
+                    if !keep {
+                        t.abort();
+                    }
+                    keep
+                });
+                latest.lock().unwrap_or_else(|e| e.into_inner()).retain(|id, _| running.contains(id));
+                for id in running {
+                    if tasks.0.contains_key(&id) {
+                        continue;
+                    }
+                    let d = self.d.clone();
+                    let map = latest.clone();
+                    let cid = id.clone();
+                    let h = tokio::spawn(async move {
+                        let mut st = d.stats(&cid, Some(StatsOptions { stream: true, one_shot: false }));
+                        while let Some(Ok(item)) = st.next().await {
+                            let s = stats_sample(&item);
+                            map.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                                cid.clone(),
+                                ContainerLiveStat { id: cid.clone(), cpu: s.cpu, mem_used: s.mem_used, mem_limit: s.mem_limit },
+                            );
+                        }
+                    });
+                    tasks.0.insert(id, h);
+                }
+            }
+            if first {
+                // Give the per-container streams a moment so the first batch is not empty.
+                first = false;
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+            }
+            let items: Vec<ContainerLiveStat> = latest.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+            out.send(AgentMsg::Stream { sid, data: StreamData::StatsAll { ts: now_ms(), items } })
+                .await
+                .map_err(|_| anyhow!("closed"))?;
+        }
     }
 
     pub async fn exec(

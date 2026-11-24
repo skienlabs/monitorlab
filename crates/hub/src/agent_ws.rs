@@ -263,7 +263,7 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         .await?;
 
     let opts = monitorlab_agent::AgentOptions {
-        interval_secs: 10,
+        interval_secs: 5,
         docker_enabled: true,
         docker_socket: None,
         mssql: Default::default(),

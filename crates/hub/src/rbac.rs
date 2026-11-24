@@ -113,7 +113,7 @@ pub fn for_stream(r: &StreamRequest) -> &'static str {
     match r {
         StreamRequest::ContainerLogs { .. } => LOGS_VIEW,
         StreamRequest::ContainerExec { .. } => CONTAINERS_EXEC,
-        StreamRequest::ContainerStats { .. } => DOCKER_VIEW,
+        StreamRequest::ContainerStats { .. } | StreamRequest::ContainerStatsAll { .. } => DOCKER_VIEW,
         StreamRequest::SystemLive { .. } => SERVERS_VIEW,
         StreamRequest::IisLogFollow { .. } => LOGS_VIEW,
         StreamRequest::MssqlLogFollow { .. } => LOGS_VIEW,

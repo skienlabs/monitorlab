@@ -1,4 +1,5 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, Copy, Search as SearchIcon, X } from "lucide-react";
 import type { Status } from "../types";
 
@@ -138,30 +139,96 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
 
 // ------------------------------------------------------------------ menu
 
+/** Row/overflow menu. Rendered in a portal with fixed positioning, so it is never clipped by a
+ *  scrolling table or card, and it flips above the button when there is no room below. */
 export function Menu({ trigger, children, label = "More actions" }: { trigger: ReactNode; children: ReactNode; label?: string }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const h = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
-    const k = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", h);
-    document.addEventListener("keydown", k);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const b = btn.current?.getBoundingClientRect();
+      const m = pop.current;
+      if (!b || !m) return;
+      const w = m.offsetWidth;
+      const h = m.offsetHeight;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let left = b.right - w;
+      left = Math.max(8, Math.min(left, vw - w - 8));
+      let top = b.bottom + 4;
+      if (top + h > vh - 8 && b.top - 4 - h >= 8) top = b.top - 4 - h;
+      top = Math.max(8, Math.min(top, vh - h - 8));
+      setPos({ top, left });
+    };
+    place();
+    const close = () => setOpen(false);
+    // Follow the button when the page or a table scrolls; close once it leaves the screen.
+    let raf = 0;
+    const follow = (e: Event) => {
+      if (pop.current?.contains(e.target as Node)) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const b = btn.current?.getBoundingClientRect();
+        if (!b || b.bottom < 0 || b.top > window.innerHeight || b.right < 0 || b.left > window.innerWidth) close();
+        else place();
+      });
+    };
+    const outside = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!btn.current?.contains(t) && !pop.current?.contains(t)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", key);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", follow, true);
     return () => {
-      document.removeEventListener("mousedown", h);
-      document.removeEventListener("keydown", k);
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", follow, true);
+      cancelAnimationFrame(raf);
     };
   }, [open]);
+
   return (
-    <div className="menu-anchor" ref={ref}>
-      <button className="icon-btn sm" aria-label={label} aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+    <div className="menu-anchor">
+      <button
+        ref={btn}
+        className="icon-btn sm"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
         {trigger}
       </button>
-      {open && (
-        <div className="menu" onClick={() => setOpen(false)}>
-          {children}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={pop}
+            className="menu"
+            role="menu"
+            style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, visibility: pos ? "visible" : "hidden" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+          >
+            {children}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

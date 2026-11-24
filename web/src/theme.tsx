@@ -1,37 +1,31 @@
-import { createContext, ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, ReactNode, useContext, useState } from "react";
 
-type Mode = "light" | "dark" | "system";
+/** Two themes: a colorful Light and a colorful AMOLED Black ("dark"). */
+export type Mode = "light" | "dark";
 interface ThemeCtx {
   mode: Mode;
-  resolved: "light" | "dark";
+  resolved: Mode;
   setMode: (m: Mode) => void;
 }
 
-const Ctx = createContext<ThemeCtx>({ mode: "system", resolved: "light", setMode: () => {} });
+const Ctx = createContext<ThemeCtx>({ mode: "light", resolved: "light", setMode: () => {} });
 export const useTheme = () => useContext(Ctx);
 
 function read(): Mode {
   try {
     const v = localStorage.getItem("monitorlab.theme");
-    if (v === "light" || v === "dark" || v === "system") return v;
+    if (v === "light" || v === "dark") return v;
   } catch {
     /* ignore */
   }
-  return "system";
+  // First visit: follow the operating system once; afterwards the user's choice sticks.
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<Mode>(read);
-  const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  const [sysDark, setSysDark] = useState(mq.matches);
-  useEffect(() => {
-    const h = (e: MediaQueryListEvent) => setSysDark(e.matches);
-    mq.addEventListener("change", h);
-    return () => mq.removeEventListener("change", h);
-  }, [mq]);
-  const resolved: "light" | "dark" = mode === "system" ? (sysDark ? "dark" : "light") : mode;
   // Set synchronously during render so child effects (charts reading CSS variables) see the new theme.
-  if (document.documentElement.dataset.theme !== resolved) document.documentElement.dataset.theme = resolved;
+  if (document.documentElement.dataset.theme !== mode) document.documentElement.dataset.theme = mode;
   const setMode = (m: Mode) => {
     setModeState(m);
     try {
@@ -40,5 +34,5 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   };
-  return <Ctx.Provider value={{ mode, resolved, setMode }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ mode, resolved: mode, setMode }}>{children}</Ctx.Provider>;
 }

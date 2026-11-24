@@ -124,6 +124,21 @@ impl Collector {
     }
 
     fn disk_io_totals(&mut self) -> (f64, f64) {
+        #[cfg(target_os = "linux")]
+        if let Some(stats) = crate::diskstats::read(self.host_root.as_deref()) {
+            let mut rd = 0u64;
+            let mut wr = 0u64;
+            let mut cur = HashMap::new();
+            for (name, r, w) in stats {
+                if let Some((pr, pw)) = self.last_disk_io.get(&name) {
+                    rd += r.saturating_sub(*pr);
+                    wr += w.saturating_sub(*pw);
+                }
+                cur.insert(name, (r, w));
+            }
+            self.last_disk_io = cur;
+            return (rd as f64, wr as f64);
+        }
         let mut rd = 0u64;
         let mut wr = 0u64;
         let mut cur = HashMap::new();
@@ -185,7 +200,7 @@ impl Collector {
             disk_read_bps: rd / elapsed,
             disk_write_bps: wr / elapsed,
             disks: self.disk_list(),
-            process_count: self.sys.processes().len() as u32,
+            process_count: self.sys.processes().values().filter(|p| is_process(p)).count() as u32,
             docker: None,
             mssql: None,
             iis: None,
@@ -250,7 +265,7 @@ impl Collector {
         let mut mem = 0;
         let mut pids = Vec::new();
         for (pid, p) in self.sys.processes() {
-            if pred(p) {
+            if is_process(p) && pred(p) {
                 cpu += p.cpu_usage();
                 mem += p.memory();
                 pids.push(pid.as_u32());
@@ -338,6 +353,7 @@ impl Collector {
         let mut procs: Vec<Value> = sys
             .processes()
             .iter()
+            .filter(|(_, p)| is_process(p))
             .map(|(pid, p)| {
                 let user = p
                     .user_id()
@@ -420,12 +436,18 @@ impl Collector {
             "mem_available": sys.available_memory(),
             "swap_total": sys.total_swap(),
             "swap_used": sys.used_swap(),
-            "process_count": sys.processes().len(),
+            "process_count": sys.processes().values().filter(|p| is_process(p)).count(),
             "top_cpu": procs,
             "top_mem": by_mem,
             "interfaces": ifaces,
         })
     }
+}
+
+/// sysinfo lists Linux threads as processes too; count each process once
+/// (a process's CPU/RSS already includes all of its threads).
+fn is_process(p: &sysinfo::Process) -> bool {
+    p.thread_kind().is_none()
 }
 
 fn proc_kind() -> ProcessRefreshKind {

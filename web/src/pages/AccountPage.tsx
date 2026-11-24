@@ -26,7 +26,7 @@ export function AccountPage() {
             <dd>{me.server_scope === null ? "All servers" : `${me.server_scope.length} selected server(s)`}</dd>
             <dt>Appearance</dt>
             <dd>
-              <Seg value={mode} onChange={setMode} options={[{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }, { value: "system", label: "System" }]} />
+              <Seg value={mode} onChange={setMode} options={[{ value: "light", label: "Light" }, { value: "dark", label: "AMOLED Black" }]} />
             </dd>
           </dl>
         </div>

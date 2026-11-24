@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 fn d_interval() -> u32 {
-    10
+    5
 }
 fn d_true() -> bool {
     true
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn minimal_config_parses() {
         let c: AgentConfig = toml::from_str("hub_url='https://h:8443'\nagent_id='a'\nsecret='s'\n").unwrap();
-        assert_eq!(c.interval_secs, 10);
+        assert_eq!(c.interval_secs, 5);
         assert!(c.docker.enabled);
         assert!(c.mssql.enabled.is_none());
     }

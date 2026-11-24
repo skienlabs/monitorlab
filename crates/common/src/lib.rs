@@ -361,6 +361,8 @@ pub enum StreamRequest {
         rows: u16,
     },
     ContainerStats { id: String },
+    /// Live CPU / memory of every running container, one batch every ~2 s.
+    ContainerStatsAll {},
     SystemLive {
         #[serde(default = "default_live_ms")]
         interval_ms: u32,
@@ -384,6 +386,7 @@ impl StreamRequest {
             StreamRequest::ContainerLogs { .. } => "container_logs",
             StreamRequest::ContainerExec { .. } => "container_exec",
             StreamRequest::ContainerStats { .. } => "container_stats",
+            StreamRequest::ContainerStatsAll { .. } => "container_stats_all",
             StreamRequest::SystemLive { .. } => "system_live",
             StreamRequest::IisLogFollow { .. } => "iis_log_follow",
             StreamRequest::MssqlLogFollow { .. } => "mssql_log_follow",
@@ -399,6 +402,16 @@ pub struct LogLine {
     /// 1 = stdout, 2 = stderr, 0 = unknown/file.
     pub s: u8,
     pub text: String,
+}
+
+/// Compact per-container sample for the containers list.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContainerLiveStat {
+    pub id: String,
+    /// Docker convention: 100 = one full CPU core.
+    pub cpu: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -421,6 +434,7 @@ pub enum StreamData {
     /// Raw terminal output, base64.
     Bytes { b64: String },
     Stats(ContainerStatsSample),
+    StatsAll { ts: i64, items: Vec<ContainerLiveStat> },
     Live(MetricsSample),
     Info { msg: String },
 }

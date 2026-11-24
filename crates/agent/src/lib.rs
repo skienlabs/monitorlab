@@ -8,6 +8,8 @@ pub mod config;
 pub mod conn;
 pub mod docker;
 pub mod hostnet;
+#[cfg(target_os = "linux")]
+pub mod diskstats;
 pub mod iis;
 pub mod install;
 pub mod mssql;

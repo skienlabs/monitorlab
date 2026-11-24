@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Activity, ChevronRight, CirclePlay, CircleStop, Eye, EyeOff, FileText, Info, RotateCcw, SquareTerminal, Trash2 } from "lucide-react";
+import { Activity, ChevronRight, CirclePlay, CircleStop, Cpu, Eye, EyeOff, FileText, Info, ListTree, MemoryStick, Network, RotateCcw, SquareTerminal, Trash2 } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Server } from "../types";
@@ -61,38 +61,42 @@ function StatsTab({ serverId, id }: { serverId: string; id: string }) {
     <div className="col" style={{ gap: 16 }}>
       {err && <div className="banner warn">{err}</div>}
       <div className="grid grid-4">
-        <div className="card kpi">
-          <div className="label">CPU</div>
+        <div className="card kpi" data-accent="cpu">
+          <div className="label">
+            <Cpu size={16} /> CPU</div>
           <div className="value">{last ? pct(last.cpu, 1) : "—"}</div>
           <div className="foot">100% = one full core</div>
         </div>
-        <div className="card kpi">
-          <div className="label">Memory</div>
+        <div className="card kpi" data-accent="mem">
+          <div className="label">
+            <MemoryStick size={16} /> Memory</div>
           <div className="value">{last ? bytes(last.mem_used) : "—"}</div>
           <div className="foot">limit {last ? bytes(last.mem_limit) : "—"}</div>
         </div>
-        <div className="card kpi">
-          <div className="label">Network total</div>
+        <div className="card kpi" data-accent="net">
+          <div className="label">
+            <Network size={16} /> Network total</div>
           <div className="value" style={{ fontSize: 20 }}>↓ {last ? bytes(last.net_rx) : "—"}</div>
           <div className="value" style={{ fontSize: 20 }}>↑ {last ? bytes(last.net_tx) : "—"}</div>
         </div>
-        <div className="card kpi">
-          <div className="label">Processes</div>
+        <div className="card kpi" data-accent="up">
+          <div className="label">
+            <ListTree size={16} /> Processes</div>
           <div className="value">{last?.pids ?? "—"}</div>
           <div className="foot">Block I/O {last ? `${bytes(last.blk_read)} read / ${bytes(last.blk_write)} written` : "—"}</div>
         </div>
       </div>
       <div className="grid grid-2">
-        <ChartCard title="CPU">
-          <TimeChart live ts={view.ts} series={[{ label: "CPU", values: view.cpu, color: "--series-1" }]} fmt={(v) => `${v.toFixed(v < 10 ? 1 : 0)}%`} minTop={5} empty="Collecting samples…" />
+        <ChartCard title="CPU" accent="cpu">
+          <TimeChart live ts={view.ts} series={[{ label: "CPU", values: view.cpu, color: "--accent-cpu" }]} fmt={(v) => `${v.toFixed(v < 10 ? 1 : 0)}%`} minTop={5} empty="Collecting samples…" />
         </ChartCard>
-        <ChartCard title="Memory">
-          <TimeChart live ts={view.ts} series={[{ label: "Memory", values: view.mem, color: "--series-1" }]} fmt={(v) => bytes(v, 0)} minTop={1048576} empty="Collecting samples…" />
+        <ChartCard title="Memory" accent="mem">
+          <TimeChart live ts={view.ts} series={[{ label: "Memory", values: view.mem, color: "--accent-mem" }]} fmt={(v) => bytes(v, 0)} minTop={1048576} empty="Collecting samples…" />
         </ChartCard>
-        <ChartCard title="Network">
+        <ChartCard title="Network" accent="net">
           <TimeChart live ts={view.ts} series={[{ label: "Received", values: view.rx, color: "--series-1" }, { label: "Sent", values: view.tx, color: "--series-2" }]} fmt={rate} minTop={1024} empty="Collecting samples…" />
         </ChartCard>
-        <ChartCard title="Block I/O">
+        <ChartCard title="Block I/O" accent="disk">
           <TimeChart live ts={view.ts} series={[{ label: "Read", values: view.br, color: "--series-1" }, { label: "Write", values: view.bw, color: "--series-2" }]} fmt={rate} minTop={1024} empty="Collecting samples…" />
         </ChartCard>
       </div>
