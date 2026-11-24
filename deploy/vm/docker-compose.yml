@@ -3,7 +3,7 @@
 # Same layout as the other apps: on skiensuite-net, published through Nginx Proxy Manager.
 #
 # Nginx Proxy Manager → Proxy host:
-#   Domain:        monitorlab.skienlab.com      (DNS A record → this VM)
+#   Domain:        monitorlab.skiensoftwarelab.com  (DNS A record → this VM)
 #   Forward:       http   monitorlab   8090
 #   Websockets Support: ON  (required for live logs, terminal and agents)
 #   SSL:           Let's Encrypt, Force SSL, HTTP/2
@@ -19,6 +19,10 @@ services:
     restart: unless-stopped
     networks:
       - skiensuite-net
+    # The hub also monitors this VM (built-in agent): host processes via the shared PID
+    # namespace, host disks / network counters via the read-only host root, containers via
+    # the Docker socket.
+    pid: host
     environment:
       # TLS is terminated by Nginx Proxy Manager.
       MONITORLAB_TLS: "off"
@@ -26,16 +30,16 @@ services:
       MONITORLAB_TRUST_PROXY: "true"
       MONITORLAB_SECURE_COOKIES: "true"
       # Address users, agents and alert emails use:
-      MONITORLAB_PUBLIC_URL: "https://monitorlab.skienlab.com"
+      MONITORLAB_PUBLIC_URL: "https://monitorlab.skiensoftwarelab.com"
       # First start only. Leave MONITORLAB_ADMIN_PASSWORD unset to get a generated
       # password in `docker logs monitorlab` (must be changed at first sign-in).
-      MONITORLAB_ADMIN_EMAIL: "admin@skienlab.com"
-      # This container sits on a Docker network, so it cannot see the VM's real network
-      # traffic. Monitor the VM itself by installing the agent on it (see README).
-      MONITORLAB_LOCAL_AGENT: "false"
+      MONITORLAB_ADMIN_EMAIL: "admin@skiensoftwarelab.com"
+      MONITORLAB_HOST_ROOT: "/host"
       TZ: "Asia/Kolkata"
     volumes:
       - monitorlab-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/host:ro
     logging:
       driver: json-file
       options:

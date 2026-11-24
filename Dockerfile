@@ -14,6 +14,9 @@ RUN npm run build
 
 # ---------------------------------------------------------------- rust binaries
 FROM ${REGISTRY}/rust:1-bookworm AS build
+# Short commit SHA shown in the UI footer ("build abc1234"); set by CI.
+ARG GIT_SHA=""
+ENV MONITORLAB_BUILD=${GIT_SHA}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools gcc-mingw-w64-x86-64 \
  && rm -rf /var/lib/apt/lists/* \

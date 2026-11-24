@@ -13,7 +13,7 @@ use monitorlab_common::{AgentHello, Capabilities, DiskInfo, MetricsSample, OsFam
 use crate::util::{host_path, now_ms};
 
 /// Network interfaces that only carry traffic already counted on a physical NIC.
-fn is_virtual_iface(name: &str) -> bool {
+pub fn is_virtual_iface(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n == "lo"
         || n.starts_with("veth")
@@ -57,6 +57,8 @@ pub struct Collector {
     last_disk_io: HashMap<String, (u64, u64)>,
     host_root: Option<String>,
     with_processes: bool,
+    /// Host `/sys/class/net` when running in a container on its own network namespace.
+    host_net: Option<std::path::PathBuf>,
 }
 
 impl Collector {
@@ -78,9 +80,13 @@ impl Collector {
             last_at: Instant::now(),
             last_net: HashMap::new(),
             last_disk_io: HashMap::new(),
+            host_net: crate::hostnet::detect(host_root.as_deref()),
             host_root,
             with_processes,
         };
+        if let Some(dir) = &c.host_net {
+            tracing::info!("network metrics read from the host ({})", dir.display());
+        }
         // Prime counters so the first real sample has a baseline.
         c.net_totals();
         c.disk_io_totals();
@@ -91,6 +97,17 @@ impl Collector {
         let mut rx = 0u64;
         let mut tx = 0u64;
         let mut cur = HashMap::new();
+        if let Some(dir) = self.host_net.clone() {
+            for i in crate::hostnet::read_ifaces(&dir).into_iter().filter(|i| i.physical) {
+                if let Some((pr, pt)) = self.last_net.get(&i.name) {
+                    rx += i.rx.saturating_sub(*pr);
+                    tx += i.tx.saturating_sub(*pt);
+                }
+                cur.insert(i.name, (i.rx, i.tx));
+            }
+            self.last_net = cur;
+            return (rx as f64, tx as f64, 0.0);
+        }
         for (name, data) in self.nets.list() {
             if is_virtual_iface(name) {
                 continue;
@@ -253,7 +270,10 @@ impl Collector {
         let hostname = read_host_hostname(root).or_else(System::host_name).unwrap_or_else(|| "unknown".into());
         let cpu_model = self.sys.cpus().first().map(|c| c.brand().trim().to_string()).unwrap_or_default();
         let mut ips: Vec<String> = Vec::new();
-        for (name, data) in self.nets.list() {
+        if self.host_net.is_some() {
+            ips = crate::hostnet::host_ipv4();
+        }
+        for (name, data) in self.nets.list().iter().filter(|_| self.host_net.is_none()) {
             if is_virtual_iface(name) {
                 continue;
             }
@@ -344,8 +364,26 @@ impl Collector {
         procs.truncate(30);
         by_mem.truncate(30);
 
+        let host_net = crate::hostnet::detect(host_root.as_deref());
         let nets = Networks::new_with_refreshed_list();
-        let mut ifaces: Vec<Value> = nets
+        let mut ifaces: Vec<Value> = if let Some(dir) = &host_net {
+            let ips = crate::hostnet::host_ipv4();
+            crate::hostnet::read_ifaces(dir)
+                .into_iter()
+                .filter(|i| i.name != "lo" && !i.name.starts_with("veth"))
+                .map(|i| {
+                    json!({
+                        "name": i.name,
+                        "mac": i.mac,
+                        "ips": if i.physical { ips.clone() } else { vec![] },
+                        "rx_total": i.rx,
+                        "tx_total": i.tx,
+                        "virtual": !i.physical,
+                    })
+                })
+                .collect()
+        } else {
+            nets
             .list()
             .iter()
             .filter(|(n, _)| n.as_str() != "lo" && !n.starts_with("veth"))
@@ -359,7 +397,8 @@ impl Collector {
                     "virtual": is_virtual_iface(name),
                 })
             })
-            .collect();
+            .collect()
+        };
         ifaces.sort_by_key(|v| (v["virtual"].as_bool().unwrap_or(false), v["name"].as_str().unwrap_or("").to_string()));
 
         let root = host_root.as_deref();

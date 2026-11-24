@@ -22,6 +22,8 @@ pub struct AppState {
     pub rules: RwLock<crate::alerts::AlertRules>,
     /// Product name shown in the UI and notifications (editable by administrators).
     pub brand: RwLock<String>,
+    /// Company name shown in the footer (editable by administrators).
+    pub company: RwLock<String>,
 }
 
 pub type S = Arc<AppState>;
@@ -43,6 +45,10 @@ impl AppState {
 
     pub fn brand(&self) -> String {
         self.brand.read().unwrap().clone()
+    }
+
+    pub fn company(&self) -> String {
+        self.company.read().unwrap().clone()
     }
 
     pub fn secure_cookies(&self) -> bool {

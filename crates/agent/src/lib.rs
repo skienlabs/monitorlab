@@ -7,6 +7,7 @@
 pub mod config;
 pub mod conn;
 pub mod docker;
+pub mod hostnet;
 pub mod iis;
 pub mod install;
 pub mod mssql;

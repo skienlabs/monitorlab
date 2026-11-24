@@ -92,6 +92,7 @@ jobs:
       - name: Build image
         run: |
           docker build \
+            --build-arg GIT_SHA="${GITHUB_SHA::7}" \
             -t "$IMAGE:latest" \
             -t "$IMAGE:${GITHUB_SHA::7}" \
             .

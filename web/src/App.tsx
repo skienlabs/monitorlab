@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { Activity, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, SunMoon, UserRound, Users } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
-import { BrandProvider, useBrand } from "./brand";
+import { BrandFooter, BrandProvider, useBrand } from "./brand";
 import { GeneralSettings } from "./pages/GeneralSettings";
 import { ThemeProvider, useTheme } from "./theme";
 import { ServersProvider, useServers } from "./servers";
@@ -108,6 +108,7 @@ function Nav({ open }: { open: boolean }) {
       <NavLink to="/account">
         <UserRound size={20} /> Account
       </NavLink>
+      <BrandFooter />
     </nav>
   );
 }

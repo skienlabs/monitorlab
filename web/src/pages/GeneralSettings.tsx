@@ -5,18 +5,22 @@ import { useBrand } from "../brand";
 import { Spinner, useToast } from "../components/ui";
 
 export function GeneralSettings() {
-  const { name, setName } = useBrand();
+  const { name, company, version, build, setBrand } = useBrand();
   const [value, setValue] = useState(name);
+  const [comp, setComp] = useState(company);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   useEffect(() => setValue(name), [name]);
+  useEffect(() => setComp(company), [company]);
   const trimmed = value.trim();
+  const compTrimmed = comp.trim();
+  const dirty = trimmed !== name || compTrimmed !== company;
   const save = async () => {
     setBusy(true);
     try {
-      await api("/branding", { method: "PUT", body: { name: trimmed } });
-      setName(trimmed);
-      toast("Name updated");
+      await api("/branding", { method: "PUT", body: { name: trimmed, company: compTrimmed } });
+      setBrand({ name: trimmed, company: compTrimmed });
+      toast("Saved");
     } catch (e: any) {
       toast(e.message, true);
     } finally {
@@ -38,6 +42,11 @@ export function GeneralSettings() {
           <span className="hint">Shown in the header, on the sign-in page, in the browser tab and in alert emails and chat notifications.</span>
         </div>
         <div className="field">
+          <label htmlFor="company">Company name</label>
+          <input id="company" className="input" style={{ maxWidth: 420 }} maxLength={60} value={comp} onChange={(e) => setComp(e.target.value)} onKeyDown={(e) => e.key === "Enter" && trimmed && compTrimmed && save()} />
+          <span className="hint">Shown in the footer: © {new Date().getFullYear()} {compTrimmed || "…"}</span>
+        </div>
+        <div className="field">
           <label>Preview</label>
           <div className="row brand-preview">
             <span className="brand-mark"><Activity size={19} /></span>
@@ -45,7 +54,8 @@ export function GeneralSettings() {
           </div>
         </div>
         <div className="row" style={{ justifyContent: "flex-end" }}>
-          <button className="btn filled" disabled={busy || !trimmed || trimmed === name} onClick={save}>{busy && <Spinner />} Save</button>
+          <span className="small muted grow">Version {version}{build ? ` · build ${build}` : ""}</span>
+          <button className="btn filled" disabled={busy || !trimmed || !compTrimmed || !dirty} onClick={save}>{busy && <Spinner />} Save</button>
         </div>
       </div>
     </div>

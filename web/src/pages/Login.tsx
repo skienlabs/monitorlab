@@ -4,7 +4,7 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import type { Me } from "../types";
 import { Spinner } from "../components/ui";
-import { useBrand } from "../brand";
+import { BrandFooter, useBrand } from "../brand";
 
 export function Login() {
   const { setMe } = useAuth();
@@ -67,6 +67,7 @@ export function Login() {
             </button>
           </div>
         </form>
+        <BrandFooter className="login-footer" />
       </div>
     </div>
   );

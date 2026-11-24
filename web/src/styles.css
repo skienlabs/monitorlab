@@ -113,6 +113,9 @@ body {
   font-feature-settings: "cv11", "ss01";
 }
 a { color: var(--primary); text-decoration: none; }
+/* No text caret in static content (e.g. Chrome caret browsing); only where you can type. */
+body { caret-color: transparent; }
+input, textarea, select, [contenteditable="true"], .xterm, .xterm textarea { caret-color: auto; }
 a:hover { text-decoration: underline; }
 button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
@@ -154,6 +157,10 @@ h3 { font-size: 15px; }
 .nav a:hover { background: var(--hover); text-decoration: none; color: var(--text); }
 .nav a.active { background: var(--primary-soft); color: var(--on-primary-soft); }
 .nav a .count { margin-left: auto; font-size: 12px; color: var(--text-3); }
+.brand-footer { margin-top: auto; padding: 16px 16px 4px; border-top: 1px solid var(--outline-soft); font-size: 12px; line-height: 1.6; color: var(--text-3); }
+.nav .brand-footer { margin-top: auto; margin-left: 4px; margin-right: 4px; }
+.nav { min-height: 0; }
+.login-footer { margin-top: 28px; padding: 14px 0 0; text-align: center; }
 .main { overflow-y: auto; padding: 8px 28px 48px 8px; min-width: 0; }
 .page { max-width: 1680px; margin: 0 auto; }
 .page-narrow { max-width: 1100px; }

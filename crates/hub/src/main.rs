@@ -286,7 +286,11 @@ async fn run() -> Result<()> {
         throttle: Throttle::default(),
         rules: std::sync::RwLock::new(Default::default()),
         brand: std::sync::RwLock::new(cfg.brand_name.clone()),
+        company: std::sync::RwLock::new(cfg.company_name.clone()),
     });
+    if let Some(c) = db.get_setting("company_name").await?.filter(|n| !n.trim().is_empty()) {
+        *state.company.write().unwrap() = c;
+    }
     if let Some(name) = db.get_setting("brand_name").await?.filter(|n| !n.trim().is_empty()) {
         *state.brand.write().unwrap() = name;
     }
@@ -302,7 +306,7 @@ async fn run() -> Result<()> {
     }
 
     let app = router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
-    tracing::info!("MonitorLab hub {} listening on {}://{}", monitorlab_common::VERSION, if tls.is_some() { "https" } else { "http" }, cfg.listen);
+    tracing::info!("MonitorLab hub {}{} listening on {}://{}", monitorlab_common::VERSION, api::build_id().map(|b| format!(" (build {b})")).unwrap_or_default(), if tls.is_some() { "https" } else { "http" }, cfg.listen);
     if let Some(t) = &tls {
         tracing::info!("TLS certificate SHA-256 fingerprint: {}", t.fingerprint);
         let handle = axum_server::Handle::new();

@@ -352,6 +352,7 @@ def main():
         code, d = Client(hub).get("/branding")
         check("product name is public (sign-in page)", code == 200 and d.get("name"), (code, d))
         original = d.get("name")
+        check("branding exposes company and version", d.get("company") and d.get("version"), d)
         code, d = admin.req("PUT", "/branding", {"name": "x" * 41})
         check("overlong product name rejected", code == 400, (code, d))
         code, d = admin.req("PUT", "/branding", {"name": f"{tag} Monitoring"})

@@ -56,6 +56,10 @@ pub struct HubConfig {
     #[arg(long, env = "MONITORLAB_BRAND_NAME", default_value = "MonitorLab")]
     pub brand_name: String,
 
+    /// Company shown in the footer until changed in Settings → General.
+    #[arg(long, env = "MONITORLAB_COMPANY_NAME", default_value = "Skien Software Lab")]
+    pub company_name: String,
+
     #[arg(long, env = "MONITORLAB_ADMIN_EMAIL", default_value = "admin@monitorlab.local")]
     pub admin_email: String,
 

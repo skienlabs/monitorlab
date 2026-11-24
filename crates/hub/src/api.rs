@@ -904,24 +904,50 @@ pub async fn audit_log(State(state): State<S>, user: AuthUser, Query(q): Query<A
 
 // =================================================================== branding
 
-/// Public: the login page needs the product name before anyone signs in.
+/// Build identifier baked into the image by CI (short commit SHA), if any.
+pub fn build_id() -> Option<&'static str> {
+    option_env!("MONITORLAB_BUILD").filter(|b| !b.is_empty())
+}
+
+/// Public: the sign-in page needs the product name before anyone signs in.
 pub async fn get_branding(State(state): State<S>) -> Json<Value> {
-    Json(json!({ "name": state.brand() }))
+    Json(json!({
+        "name": state.brand(),
+        "company": state.company(),
+        "version": monitorlab_common::VERSION,
+        "build": build_id(),
+    }))
 }
 
 #[derive(Deserialize)]
 pub struct BrandingBody {
     name: String,
+    #[serde(default)]
+    company: Option<String>,
+}
+
+fn clean_label(v: &str, what: &str, max: usize) -> ApiResult<String> {
+    let v = v.trim().to_string();
+    if v.is_empty() || v.chars().count() > max || v.chars().any(|c| c.is_control()) {
+        return Err(ApiError::bad(format!("{what} must be 1–{max} characters")));
+    }
+    Ok(v)
 }
 
 pub async fn put_branding(State(state): State<S>, user: AuthUser, Json(b): Json<BrandingBody>) -> ApiResult<Json<Value>> {
     user.require(rbac::USERS_MANAGE)?;
-    let name = b.name.trim().to_string();
-    if name.is_empty() || name.chars().count() > 40 || name.chars().any(|c| c.is_control()) {
-        return Err(ApiError::bad("Name must be 1–40 characters"));
-    }
+    let name = clean_label(&b.name, "Name", 40)?;
+    let company = match &b.company {
+        Some(c) => Some(clean_label(c, "Company name", 60)?),
+        None => None,
+    };
     state.db.set_setting("brand_name", name.clone()).await?;
     let old = std::mem::replace(&mut *state.brand.write().unwrap(), name.clone());
-    audit(&state, Some(&user), "", AuditEntry { action: "branding_updated", server: None, target: Some(name), detail: Some(format!("was: {old}")), ok: true }).await;
+    if let Some(c) = &company {
+        state.db.set_setting("company_name", c.clone()).await?;
+        *state.company.write().unwrap() = c.clone();
+    }
+    let detail = format!("was: {old}{}", company.as_ref().map(|c| format!("; company: {c}")).unwrap_or_default());
+    audit(&state, Some(&user), "", AuditEntry { action: "branding_updated", server: None, target: Some(name), detail: Some(detail), ok: true }).await;
     Ok(Json(json!({ "ok": true })))
 }

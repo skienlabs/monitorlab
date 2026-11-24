@@ -67,7 +67,7 @@ It uses the same secrets: `GCP_SA_KEY`, `GCP_PROJECT_ID`, `VM_HOST`, `VM_USER` a
 2. **Compose file**: `mkdir -p ~/docker/apps/monitorlab`, then copy `deploy/vm/docker-compose.yml` there. Set `MONITORLAB_PUBLIC_URL` and `MONITORLAB_ADMIN_EMAIL`.
 3. **Nginx Proxy Manager**: add a proxy host for `monitorlab.skienlab.com` forwarding to `http` `monitorlab` `8090`, turn **Websockets Support on**, and add an SSL certificate (Let's Encrypt, Force SSL). Point the DNS A record at the VM.
 4. **Run the workflow.** After the first deploy, `docker logs monitorlab` shows the generated admin password.
-5. **Monitor the VM itself**: in MonitorLab, go to **Servers & agents → Add server** and run the Linux install command on the VM. The hub container sits on `skiensuite-net`, so the built-in agent is disabled (it couldn't see the VM's real network traffic).
+5. **The VM itself** shows up automatically as the "hub host" server. The built-in agent reads host processes through `pid: host`, and host disks and network counters (from `/sys/class/net`) through the read-only `/:/host` mount. Containers come through the Docker socket. You don't need a separate agent install on the hub's own server.
 
 The workflow waits for the container's Docker health check to report `healthy`. To roll back, change the image tag in the compose file to `:<old sha>` and run `docker compose up -d`.
 
