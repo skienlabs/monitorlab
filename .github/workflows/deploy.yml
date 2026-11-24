@@ -73,7 +73,7 @@ jobs:
         env:
           PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
-          ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
+          ACCOUNT=$(jq -r '.client_email // "unknown"' "$GOOGLE_APPLICATION_CREDENTIALS" 2>/dev/null || echo unknown)
           echo "Service account: $ACCOUNT"
           RESP=$(curl -s -X POST \
             -H "Authorization: Bearer $(gcloud auth print-access-token)" \
