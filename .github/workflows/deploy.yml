@@ -67,6 +67,27 @@ jobs:
       - name: Configure Docker
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
+      # Fail in seconds (not after a 10-minute build) if this key cannot push to test-images.
+      # testIamPermissions needs no permission itself and returns the subset actually granted.
+      - name: Check Artifact Registry push access
+        env:
+          PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
+          echo "Service account: $ACCOUNT"
+          RESP=$(curl -s -X POST \
+            -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+            -H "Content-Type: application/json" \
+            -d '{"permissions":["artifactregistry.repositories.uploadArtifacts"]}' \
+            "https://artifactregistry.googleapis.com/v1/projects/${PROJECT}/locations/us-central1/repositories/test-images:testIamPermissions")
+          if echo "$RESP" | grep -q '"artifactregistry.repositories.uploadArtifacts"'; then
+            echo "OK: $ACCOUNT can push to test-images"
+          else
+            echo "$RESP"
+            echo "::error::$ACCOUNT cannot push to Artifact Registry repository test-images (us-central1) in the project from GCP_PROJECT_ID. Use the same GCP_SA_KEY and GCP_PROJECT_ID values as the Tasks repo, or grant this account roles/artifactregistry.writer on test-images."
+            exit 1
+          fi
+
       # Build image (web console, hub, Linux + Windows agents are all built inside Docker)
       - name: Build image
         run: |
