@@ -2,15 +2,15 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Box, ChevronDown, ChevronRight, CirclePause, CirclePlay, CircleStop, FileText, HardDrive, Layers, MoreVertical, Network, RefreshCw,
-  RotateCcw, Skull, SquareTerminal, Trash2, Sparkles, Hammer,
+  RotateCcw, Skull, SquareTerminal, Trash2, Sparkles, Hammer, Pause, Play, Zap, X, PencilLine, RefreshCcwDot,
 } from "lucide-react";
 import { openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Container, Server } from "../types";
-import { Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast } from "../components/ui";
+import { Dialog, Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast } from "../components/ui";
 import { ago, bytes, plural, shortId } from "../format";
 
-function Toolbar({ children, onRefresh, loading }: { children?: ReactNode; onRefresh: () => void; loading: boolean }) {
+export function Toolbar({ children, onRefresh, loading }: { children?: ReactNode; onRefresh: () => void; loading: boolean }) {
   return (
     <div className="row wrap" style={{ marginBottom: 16, gap: 12 }}>
       {children}
@@ -164,7 +164,123 @@ export function useContainerActions(serverId: string, reload: () => void) {
           }),
         success: `${c.name} deleted`,
       }),
+    recreate: (c: Pick<Container, "id" | "name">, after?: (newId: string) => void) =>
+      confirm({
+        title: `Recreate ${c.name}?`,
+        body: (
+          <>
+            The container is stopped and replaced by a new one with exactly the same settings, volumes and networks (like Portainer's
+            <i> Recreate</i>). Anything written inside the container outside volumes is lost. If anything fails, the original is restored.
+          </>
+        ),
+        confirm: "Recreate",
+        danger: true,
+        option: "Pull the latest version of the image first",
+        action: (pull) =>
+          rpc<{ id: string; pulled: boolean; image_changed: boolean }>(serverId, { op: "docker_container_recreate", id: c.id, pull }).then((r) => {
+            reload();
+            after?.(r.id);
+            return r;
+          }),
+        success: (r) => (r.pulled ? (r.image_changed ? `${c.name} recreated with the newer image` : `${c.name} recreated (image was already up to date)`) : `${c.name} recreated`),
+      }),
   };
+}
+
+export type BulkAction = "start" | "stop" | "restart" | "pause" | "unpause" | "kill" | "remove";
+const BULK_LABEL: Record<BulkAction, [string, string]> = {
+  start: ["Start", "started"],
+  stop: ["Stop", "stopped"],
+  restart: ["Restart", "restarted"],
+  pause: ["Pause", "paused"],
+  unpause: ["Resume", "resumed"],
+  kill: ["Kill", "killed"],
+  remove: ["Remove", "removed"],
+};
+
+/** Run one action on many containers (4 at a time) and report how it went. */
+export function useBulkActions(serverId: string, reload: () => void) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const exec = async (list: Pick<Container, "id" | "name">[], a: BulkAction, force = false) => {
+    const failed: string[] = [];
+    const queue = [...list];
+    const worker = async () => {
+      for (let c = queue.shift(); c; c = queue.shift()) {
+        try {
+          if (a === "remove") await rpc(serverId, { op: "docker_container_remove", id: c.id, force, volumes: false });
+          else await rpc(serverId, { op: "docker_container_action", id: c.id, action: a });
+        } catch (e: any) {
+          failed.push(`${c.name}: ${e.message}`);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+    reload();
+    const ok = list.length - failed.length;
+    if (failed.length) toast(`${ok} of ${list.length} ${BULK_LABEL[a][1]}. Failed: ${failed.join("; ")}`, true);
+    else toast(`${ok} container${ok === 1 ? "" : "s"} ${BULK_LABEL[a][1]}`);
+  };
+  return (list: Pick<Container, "id" | "name">[], a: BulkAction, done?: () => void) => {
+    const names = list.map((c) => c.name);
+    const shown = names.slice(0, 8).join(", ") + (names.length > 8 ? ` and ${names.length - 8} more` : "");
+    if (a === "start" || a === "unpause") {
+      void exec(list, a).then(done);
+      return;
+    }
+    const danger = a === "kill" || a === "remove";
+    confirm({
+      title: `${BULK_LABEL[a][0]} ${list.length} container${list.length === 1 ? "" : "s"}?`,
+      body: <>{a === "remove" ? "Permanently deletes" : a === "kill" ? "Sends SIGKILL to" : `${BULK_LABEL[a][0]}s`} <b>{shown}</b>.</>,
+      confirm: BULK_LABEL[a][0],
+      danger,
+      option: a === "remove" ? "Force-remove running containers" : undefined,
+      typeToConfirm: a === "remove" && list.length > 1 ? `remove ${list.length}` : undefined,
+      action: (opt) => exec(list, a, opt).then(done),
+    });
+  };
+}
+
+/** Rename dialog shared by the containers list and the container page. */
+export function RenameDialog({ serverId, c, onClose, onDone }: { serverId: string; c: Pick<Container, "id" | "name">; onClose: () => void; onDone: (name: string) => void }) {
+  const [name, setName] = useState(c.name);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const toast = useToast();
+  const valid = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name.trim());
+  const save = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await rpc(serverId, { op: "docker_container_rename", id: c.id, name: name.trim() });
+      toast(`Renamed to ${name.trim()}`);
+      onDone(name.trim());
+    } catch (e: any) {
+      setErr(e.message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      title={`Rename ${c.name}`}
+      onClose={() => !busy && onClose()}
+      footer={
+        <>
+          <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn filled" onClick={save} disabled={busy || !valid || name.trim() === c.name}>
+            {busy && <Spinner />} Rename
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <label htmlFor="rn">New name</label>
+        <input id="rn" className="input mono" autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && valid && save()} />
+        <span className="hint">Letters, digits, _ . and -. Compose-managed containers keep their stack labels.</span>
+      </div>
+      {err && <div className="banner crit small">{err}</div>}
+    </Dialog>
+  );
 }
 
 function Ports({ c }: { c: Container }) {
@@ -190,14 +306,19 @@ function Ports({ c }: { c: Container }) {
   );
 }
 
-function ContainerRow({ c, s, actions, live }: { c: Container; s: Server; actions: ReturnType<typeof useContainerActions>; live?: LiveHist }) {
+function ContainerRow({ c, s, actions, live, selected, onSelect, onRename }: { c: Container; s: Server; actions: ReturnType<typeof useContainerActions>; live?: LiveHist; selected?: boolean; onSelect?: (on: boolean) => void; onRename: () => void }) {
   const { can } = useAuth();
   const nav = useNavigate();
   const running = c.state === "running";
   const paused = c.state === "paused";
   const base = `/servers/${s.id}/containers/${encodeURIComponent(c.name || c.id)}`;
   return (
-    <tr style={{ cursor: "pointer" }} onClick={() => nav(base)}>
+    <tr style={{ cursor: "pointer" }} className={selected ? "selected" : undefined} onClick={() => nav(base)}>
+      {onSelect && (
+        <td className="check-cell" onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" aria-label={`Select ${c.name}`} checked={!!selected} onChange={(e) => onSelect(e.target.checked)} />
+        </td>
+      )}
       <td style={{ maxWidth: 280 }}>
         <div className="row" style={{ gap: 10 }}>
           <div className="grow">
@@ -264,8 +385,16 @@ function ContainerRow({ c, s, actions, live }: { c: Container; s: Server; action
                   <Skull size={17} /> Kill
                 </button>
               )}
+              {can("containers.control") && (
+                <button onClick={onRename}>
+                  <PencilLine size={17} /> Rename
+                </button>
+              )}
               {can("containers.delete") && (
                 <>
+                  <button onClick={() => actions.recreate(c)}>
+                    <RefreshCcwDot size={17} /> Recreate…
+                  </button>
                   <hr />
                   <button className="danger" onClick={() => actions.remove(c)}>
                     <Trash2 size={17} /> Delete container
@@ -281,12 +410,17 @@ function ContainerRow({ c, s, actions, live }: { c: Container; s: Server; action
 }
 
 export function ContainersTab({ s }: { s: Server }) {
+  const { can } = useAuth();
   const { data, error, loading, reload } = usePoll(() => rpc<Container[]>(s.id, { op: "docker_containers" }), [s.id], 5000);
   const [q, setQ] = useState("");
   const [state, setState] = useState<"all" | "running" | "stopped">("all");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [sort, setSort] = useState<"name" | "cpu" | "mem">("name");
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [renaming, setRenaming] = useState<Container | null>(null);
   const actions = useContainerActions(s.id, reload);
+  const bulk = useBulkActions(s.id, reload);
+  const canSelect = can("containers.control") || can("containers.delete");
   const live = useContainerLive(s.id, s.online);
 
   const groups = useMemo(() => {
@@ -311,6 +445,20 @@ export function ContainersTab({ s }: { s: Server }) {
 
   if (!s.online) return <Empty icon={<Box size={26} />} title="Server is offline">Container information is live and needs the agent to be connected.</Empty>;
   if (!data && !error) return <Loading />;
+  const visible = groups.flatMap(([p, l]) => (collapsed[p] && sort === "name" ? [] : l));
+  const chosen = (data ?? []).filter((c) => sel.has(c.id));
+  const allVisible = visible.length > 0 && visible.every((c) => sel.has(c.id));
+  const toggle = (id: string, on: boolean) =>
+    setSel((prev) => {
+      const n = new Set(prev);
+      if (on) n.add(id);
+      else n.delete(id);
+      return n;
+    });
+  const clear = () => setSel(new Set());
+  const anyRunning = chosen.some((c) => c.state === "running");
+  const anyStopped = chosen.some((c) => c.state !== "running" && c.state !== "paused");
+  const anyPaused = chosen.some((c) => c.state === "paused");
   const total = data?.length ?? 0;
   const running = data?.filter((c) => c.state === "running").length ?? 0;
 
@@ -329,6 +477,26 @@ export function ContainersTab({ s }: { s: Server }) {
         />
       </Toolbar>
       {error && <ErrorBanner error={error} onRetry={reload} />}
+      {chosen.length > 0 && (
+        <div className="bulk-bar" role="toolbar" aria-label="Actions for selected containers">
+          <b>{chosen.length} selected</b>
+          {can("containers.control") && (
+            <>
+              <button className="btn sm" disabled={!anyStopped} onClick={() => bulk(chosen.filter((c) => c.state !== "running" && c.state !== "paused"), "start", clear)}><CirclePlay size={15} /> Start</button>
+              <button className="btn sm" disabled={!anyRunning} onClick={() => bulk(chosen.filter((c) => c.state === "running"), "stop", clear)}><CircleStop size={15} /> Stop</button>
+              <button className="btn sm" onClick={() => bulk(chosen, "restart", clear)}><RotateCcw size={15} /> Restart</button>
+              <button className="btn sm" disabled={!anyRunning} onClick={() => bulk(chosen.filter((c) => c.state === "running"), "pause", clear)}><Pause size={15} /> Pause</button>
+              <button className="btn sm" disabled={!anyPaused} onClick={() => bulk(chosen.filter((c) => c.state === "paused"), "unpause", clear)}><Play size={15} /> Resume</button>
+              <button className="btn sm danger-text" disabled={!anyRunning} onClick={() => bulk(chosen.filter((c) => c.state === "running"), "kill", clear)}><Zap size={15} /> Kill</button>
+            </>
+          )}
+          {can("containers.delete") && (
+            <button className="btn sm danger-text" onClick={() => bulk(chosen, "remove", clear)}><Trash2 size={15} /> Remove</button>
+          )}
+          <span className="grow" />
+          <button className="btn sm" onClick={clear}><X size={15} /> Clear</button>
+        </div>
+      )}
       <div className="card">
         {groups.length === 0 ? (
           <Empty icon={<Box size={26} />} title="No containers match" />
@@ -337,6 +505,19 @@ export function ContainersTab({ s }: { s: Server }) {
             <table className="table">
               <thead>
                 <tr>
+                  {canSelect && (
+                    <th className="check-cell">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all shown containers"
+                        checked={allVisible}
+                        ref={(el) => {
+                          if (el) el.indeterminate = !allVisible && visible.some((c) => sel.has(c.id));
+                        }}
+                        onChange={(e) => setSel(e.target.checked ? new Set([...sel, ...visible.map((c) => c.id)]) : new Set([...sel].filter((id) => !visible.some((c) => c.id === id))))}
+                      />
+                    </th>
+                  )}
                   <SortTh active={sort === "name"} onClick={() => setSort("name")}>Name</SortTh>
                   <th>Image</th>
                   <th>State</th>
@@ -356,7 +537,7 @@ export function ContainersTab({ s }: { s: Server }) {
                     <GroupRows key={project || "_"}>
                       {showHeader && (
                         <tr className="group-row" onClick={() => setCollapsed((m) => ({ ...m, [project]: !m[project] }))}>
-                          <td colSpan={8}>
+                          <td colSpan={canSelect ? 9 : 8}>
                             <span className="row">
                               {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                               {project ? <Layers size={15} /> : <Box size={15} />}
@@ -368,7 +549,7 @@ export function ContainersTab({ s }: { s: Server }) {
                           </td>
                         </tr>
                       )}
-                      {!isCollapsed && list.map((c) => <ContainerRow key={c.id} c={c} s={s} actions={actions} live={live[c.id]} />)}
+                      {!isCollapsed && list.map((c) => <ContainerRow key={c.id} c={c} s={s} actions={actions} live={live[c.id]} selected={sel.has(c.id)} onSelect={canSelect ? (on) => toggle(c.id, on) : undefined} onRename={() => setRenaming(c)} />)}
                     </GroupRows>
                   );
                 })}
@@ -377,6 +558,17 @@ export function ContainersTab({ s }: { s: Server }) {
           </div>
         )}
       </div>
+      {renaming && (
+        <RenameDialog
+          serverId={s.id}
+          c={renaming}
+          onClose={() => setRenaming(null)}
+          onDone={() => {
+            setRenaming(null);
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }

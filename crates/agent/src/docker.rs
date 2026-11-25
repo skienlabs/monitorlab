@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use bollard::container::{
-    InspectContainerOptions, KillContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
+    CreateContainerOptions, InspectContainerOptions, RenameContainerOptions, KillContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
     PruneContainersOptions, RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, Stats,
     StatsOptions, StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
-use bollard::image::{ListImagesOptions, PruneImagesOptions, RemoveImageOptions};
-use bollard::network::{ListNetworksOptions, PruneNetworksOptions};
+use bollard::image::{CreateImageOptions, ListImagesOptions, PruneImagesOptions, RemoveImageOptions};
+use bollard::network::{ConnectNetworkOptions, ListNetworksOptions, PruneNetworksOptions};
 use bollard::volume::{ListVolumesOptions, PruneVolumesOptions, RemoveVolumeOptions};
 use bollard::Docker;
 use futures_util::StreamExt;
@@ -192,6 +192,163 @@ impl DockerCtl {
     pub async fn remove(&self, id: &str, force: bool, volumes: bool) -> Result<Value> {
         self.d.remove_container(id, Some(RemoveContainerOptions { force, v: volumes, link: false })).await?;
         Ok(json!({ "ok": true }))
+    }
+
+    pub async fn rename(&self, id: &str, name: &str) -> Result<Value> {
+        let name = name.trim().trim_start_matches('/');
+        if !valid_container_name(name) {
+            bail!("Container names may use letters, digits, '_', '.' and '-' and must start with a letter or digit");
+        }
+        self.d.rename_container(id, RenameContainerOptions { name }).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    /// Pull an image reference, using registry credentials from docker config files when present.
+    async fn pull(&self, reference: &str, host_root: Option<&str>) -> Result<()> {
+        let (image, tag) = split_reference(reference);
+        let creds = crate::dockerauth::credentials_for(registry_of(reference), host_root);
+        let d = self.d.clone().with_timeout(Duration::from_secs(1800));
+        let mut st = d.create_image(
+            Some(CreateImageOptions { from_image: image.to_string(), tag: tag.to_string(), ..Default::default() }),
+            None,
+            creds,
+        );
+        while let Some(item) = st.next().await {
+            let item = item.map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("unauthorized") || msg.contains("denied") || msg.contains("authentication required") {
+                    anyhow!("The registry refused the pull ({msg}). Log in on the server with `docker login` (credentials stored in ~/.docker/config.json), or recreate without pulling.")
+                } else {
+                    anyhow!("Pull failed: {msg}")
+                }
+            })?;
+            if let Some(err) = item.error {
+                bail!("Pull failed: {err}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-create a container with identical settings. The old container is stopped and renamed,
+    /// the new one created and started, then the old one removed. Any failure rolls back.
+    pub async fn recreate(&self, id: &str, pull: bool, host_root: Option<&str>) -> Result<Value> {
+        let old = self.d.inspect_container(id, None::<InspectContainerOptions>).await?;
+        let old_id = old.id.clone().unwrap_or_default();
+        if is_own_container(&old_id) {
+            bail!("This is the container MonitorLab itself runs in; update it through your deployment (docker compose pull && up -d)");
+        }
+        let name = old.name.clone().unwrap_or_default().trim_start_matches('/').to_string();
+        let cfg = old.config.clone().ok_or_else(|| anyhow!("container has no config"))?;
+        let image_ref = cfg.image.clone().unwrap_or_default();
+        let old_image = old.image.clone().unwrap_or_default();
+        let mut pulled = false;
+        if pull {
+            if image_ref.contains('@') || image_ref.starts_with("sha256:") || image_ref.is_empty() {
+                bail!("This container was created from a fixed image ID/digest, so there is nothing newer to pull");
+            }
+            self.pull(&image_ref, host_root).await?;
+            pulled = true;
+        }
+        let new_image = if pull {
+            self.d.inspect_image(&image_ref).await.ok().and_then(|i| i.id).unwrap_or_default()
+        } else {
+            old_image.clone()
+        };
+
+        let mut host = old.host_config.clone().unwrap_or_default();
+        // Keep anonymous volumes: re-attach them by name, otherwise the new container gets empty ones.
+        let mut binds = host.binds.clone().unwrap_or_default();
+        let covered: HashSet<String> = binds
+            .iter()
+            .filter_map(|b| b.split(':').nth(1).map(str::to_string))
+            .chain(host.mounts.iter().flatten().filter_map(|m| m.target.clone()))
+            .collect();
+        for m in old.mounts.clone().unwrap_or_default() {
+            if m.typ == Some(bollard::models::MountPointTypeEnum::VOLUME) {
+                if let (Some(vol), Some(dest)) = (m.name.clone(), m.destination.clone()) {
+                    if !covered.contains(&dest) {
+                        binds.push(format!("{vol}:{dest}{}", if m.rw == Some(false) { ":ro" } else { "" }));
+                    }
+                }
+            }
+        }
+        if !binds.is_empty() {
+            host.binds = Some(binds);
+        }
+
+        // Networks: the primary one goes into create (older engines accept only one), the rest are connected after.
+        let short = old_id.chars().take(12).collect::<String>();
+        let mode = host.network_mode.clone().unwrap_or_default();
+        let mut endpoints: Vec<(String, bollard::models::EndpointSettings)> = old
+            .network_settings
+            .clone()
+            .and_then(|n| n.networks)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(net, ep)| (net, clean_endpoint(ep, &short)))
+            .collect();
+        endpoints.sort_by_key(|(n, _)| if *n == mode { 0 } else { 1 });
+        let custom_net = !(mode.is_empty() || mode == "host" || mode == "none" || mode.starts_with("container:"));
+        let (primary, extra) = if custom_net && !endpoints.is_empty() {
+            let first = endpoints.remove(0);
+            (Some(first), endpoints)
+        } else {
+            (None, Vec::new())
+        };
+
+        let mut config: bollard::container::Config<String> = cfg.clone().into();
+        if config.hostname.as_deref() == Some(short.as_str()) {
+            config.hostname = None; // default hostname = old container id
+        }
+        config.image = Some(image_ref.clone());
+        config.host_config = Some(host);
+        config.networking_config = primary.map(|(n, ep)| bollard::container::NetworkingConfig { endpoints_config: HashMap::from([(n, ep)]) });
+
+        let was_running = old.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+        let backup = format!("{name}-old-{}", now_ms() / 1000);
+        if was_running {
+            self.d.stop_container(&old_id, Some(StopContainerOptions { t: 15 })).await?;
+        }
+        self.d.rename_container(&old_id, RenameContainerOptions { name: backup.as_str() }).await?;
+
+        let created = match self.d.create_container(Some(CreateContainerOptions { name: name.clone(), platform: None }), config).await {
+            Ok(c) => c,
+            Err(e) => return Err(self.restore(&old_id, &name, was_running, e.into(), None).await),
+        };
+        for (net, ep) in extra {
+            let r = self
+                .d
+                .connect_network(&net, ConnectNetworkOptions { container: created.id.clone(), endpoint_config: ep })
+                .await;
+            if let Err(e) = r {
+                return Err(self.restore(&old_id, &name, was_running, anyhow!("connecting network {net}: {e}"), Some(&created.id)).await);
+            }
+        }
+        if was_running {
+            if let Err(e) = self.d.start_container(&created.id, None::<StartContainerOptions<String>>).await {
+                return Err(self.restore(&old_id, &name, was_running, e.into(), Some(&created.id)).await);
+            }
+        }
+        // Success: the backup goes; its named and anonymous volumes stay (now used by the new container).
+        let _ = self.d.remove_container(&old_id, Some(RemoveContainerOptions { force: true, v: false, link: false })).await;
+        Ok(json!({
+            "ok": true,
+            "id": created.id,
+            "pulled": pulled,
+            "image_changed": pulled && !new_image.is_empty() && new_image != old_image,
+        }))
+    }
+
+    /// Roll a failed recreate back: drop the new container, give the old one its name back, restart it.
+    async fn restore(&self, old_id: &str, name: &str, was_running: bool, why: anyhow::Error, new_id: Option<&str>) -> anyhow::Error {
+        if let Some(nid) = new_id {
+            let _ = self.d.remove_container(nid, Some(RemoveContainerOptions { force: true, v: false, link: false })).await;
+        }
+        let _ = self.d.rename_container(old_id, RenameContainerOptions { name }).await;
+        if was_running {
+            let _ = self.d.start_container(old_id, None::<StartContainerOptions<String>>).await;
+        }
+        anyhow!("Recreate failed, the original container was restored: {why}")
     }
 
     // ------------------------------------------------------------------ images / volumes / networks
@@ -530,11 +687,11 @@ impl DockerCtl {
                             buf.push_str(&String::from_utf8_lossy(&bytes));
                             while let Some(idx) = buf.find('\n') {
                                 let line: String = buf.drain(..=idx).collect();
-                                batch.push(parse_docker_line(line.trim_end_matches('\n'), s));
+                                batch.push(parse_log_line(line.trim_end_matches('\n'), s));
                             }
                             if buf.len() > MAX_LOG_LINE {
                                 let line = std::mem::take(buf);
-                                batch.push(parse_docker_line(&line, s));
+                                batch.push(parse_log_line(&line, s));
                             }
                             if batch.len() >= 500 {
                                 flush(out, sid, &mut batch).await?;
@@ -548,7 +705,7 @@ impl DockerCtl {
                             for (s, p) in partial.iter_mut().enumerate() {
                                 if !p.is_empty() {
                                     let line = std::mem::take(p);
-                                    batch.push(parse_docker_line(&line, s as u8));
+                                    batch.push(parse_log_line(&line, s as u8));
                                 }
                             }
                             flush(out, sid, &mut batch).await?;
@@ -726,7 +883,7 @@ async fn flush(out: &mpsc::Sender<AgentMsg>, sid: u64, batch: &mut Vec<LogLine>)
 }
 
 /// Split Docker's `timestamps=true` prefix (`2024-01-02T03:04:05.123456789Z `) from the line.
-fn parse_docker_line(line: &str, s: u8) -> LogLine {
+pub(crate) fn parse_log_line(line: &str, s: u8) -> LogLine {
     let line = line.strip_suffix('\r').unwrap_or(line);
     if let Some((ts, rest)) = line.split_once(' ') {
         let b = ts.as_bytes();
@@ -790,12 +947,87 @@ mod tests {
 
     #[test]
     fn docker_line_parsing() {
-        let l = parse_docker_line("2024-05-01T10:11:12.123456789Z hello world", 1);
+        let l = parse_log_line("2024-05-01T10:11:12.123456789Z hello world", 1);
         assert_eq!(l.ts.as_deref(), Some("2024-05-01T10:11:12.123456789Z"));
         assert_eq!(l.text, "hello world");
-        let l = parse_docker_line("plain line\r", 2);
+        let l = parse_log_line("plain line\r", 2);
         assert!(l.ts.is_none());
         assert_eq!(l.text, "plain line");
         assert_eq!(l.s, 2);
+    }
+}
+
+fn valid_container_name(n: &str) -> bool {
+    let mut ch = n.chars();
+    matches!(ch.next(), Some(c) if c.is_ascii_alphanumeric())
+        && n.len() <= 128
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
+}
+
+/// `repo[:tag]` → (repo, tag); a `:` before the last `/` is a registry port, not a tag.
+pub fn split_reference(r: &str) -> (&str, &str) {
+    let last_slash = r.rfind('/').map(|i| i + 1).unwrap_or(0);
+    match r[last_slash..].rfind(':') {
+        Some(i) => (&r[..last_slash + i], &r[last_slash + i + 1..]),
+        None => (r, "latest"),
+    }
+}
+
+/// Registry host of an image reference ("docker.io" for Docker Hub images).
+pub fn registry_of(r: &str) -> &str {
+    match r.split_once('/') {
+        Some((first, _)) if first.contains('.') || first.contains(':') || first == "localhost" => first,
+        _ => "docker.io",
+    }
+}
+
+/// Strip runtime-assigned fields so the endpoint can be reused on a new container.
+fn clean_endpoint(ep: bollard::models::EndpointSettings, short_id: &str) -> bollard::models::EndpointSettings {
+    bollard::models::EndpointSettings {
+        ipam_config: ep.ipam_config,
+        links: ep.links,
+        aliases: ep.aliases.map(|a| a.into_iter().filter(|x| x != short_id).collect()),
+        driver_opts: ep.driver_opts,
+        ..Default::default()
+    }
+}
+
+/// True when `id` is the container this process runs in (the hub's built-in agent).
+fn is_own_container(id: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
+            let h = h.trim();
+            if h.len() >= 12 && id.starts_with(h) {
+                return true;
+            }
+        }
+        if let Ok(m) = std::fs::read_to_string("/proc/self/mountinfo") {
+            if id.len() >= 32 && m.contains(&format!("/containers/{id}/")) {
+                return true;
+            }
+        }
+    }
+    let _ = id;
+    false
+}
+
+#[cfg(test)]
+mod ref_tests {
+    use super::*;
+
+    #[test]
+    fn references() {
+        assert_eq!(split_reference("nginx"), ("nginx", "latest"));
+        assert_eq!(split_reference("nginx:1.27-alpine"), ("nginx", "1.27-alpine"));
+        assert_eq!(split_reference("localhost:5000/app"), ("localhost:5000/app", "latest"));
+        assert_eq!(split_reference("us-central1-docker.pkg.dev/p/r/app:v2"), ("us-central1-docker.pkg.dev/p/r/app", "v2"));
+        assert_eq!(registry_of("nginx"), "docker.io");
+        assert_eq!(registry_of("library/nginx:1"), "docker.io");
+        assert_eq!(registry_of("ghcr.io/a/b"), "ghcr.io");
+        assert_eq!(registry_of("localhost:5000/app"), "localhost:5000");
+        assert!(valid_container_name("api-devpilot_2.test"));
+        assert!(!valid_container_name("-bad"));
+        assert!(!valid_container_name("bad name"));
     }
 }

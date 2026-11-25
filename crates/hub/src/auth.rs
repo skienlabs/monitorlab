@@ -56,6 +56,18 @@ pub struct AuthUser {
     pub must_change_password: bool,
     pub ip: String,
     pub token_hash: String,
+    pub title: String,
+    pub phone: String,
+    pub avatar_version: i64,
+}
+
+/// URL of a user's profile photo (versioned so browsers can cache it), or null.
+pub fn avatar_url(id: i64, version: i64) -> Value {
+    if version > 0 {
+        json!(format!("/api/users/{id}/avatar?v={version}"))
+    } else {
+        Value::Null
+    }
 }
 
 impl AuthUser {
@@ -85,6 +97,9 @@ impl AuthUser {
             "permissions": self.perms,
             "server_scope": self.scope,
             "must_change_password": self.must_change_password,
+            "title": self.title,
+            "phone": self.phone,
+            "avatar": avatar_url(self.id, self.avatar_version),
         })
     }
 }
@@ -124,7 +139,7 @@ async fn load_session(state: &S, parts: &Parts) -> ApiResult<AuthUser> {
             let row = c
                 .query_row(
                     "SELECT u.id, u.email, u.name, u.role_id, r.name, r.permissions, u.server_scope, u.must_change_password, \
-                     s.last_seen_at, s.expires_at \
+                     s.last_seen_at, s.expires_at, u.title, u.phone, u.avatar_version \
                      FROM sessions s JOIN users u ON u.id = s.user_id JOIN roles r ON r.id = u.role_id \
                      WHERE s.token_hash = ?1 AND u.disabled = 0",
                     [&th],
@@ -140,11 +155,12 @@ async fn load_session(state: &S, parts: &Parts) -> ApiResult<AuthUser> {
                             r.get::<_, bool>(7)?,
                             r.get::<_, i64>(8)?,
                             r.get::<_, i64>(9)?,
+                            (r.get::<_, String>(10)?, r.get::<_, String>(11)?, r.get::<_, i64>(12)?),
                         ))
                     },
                 )
                 .optional()?;
-            let Some((id, email, name, role_id, role, perms, scope, must_change, last_seen, expires)) = row else {
+            let Some((id, email, name, role_id, role, perms, scope, must_change, last_seen, expires, (title, phone, avatar_version))) = row else {
                 return Ok(None);
             };
             let now = now_ms();
@@ -168,6 +184,9 @@ async fn load_session(state: &S, parts: &Parts) -> ApiResult<AuthUser> {
                 must_change_password: must_change,
                 ip: String::new(),
                 token_hash: th,
+                title,
+                phone,
+                avatar_version,
             }))
         })
         .await?;

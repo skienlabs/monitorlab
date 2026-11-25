@@ -25,6 +25,7 @@ pub struct AgentOptions {
     pub mssql: MssqlConfig,
     pub iis_enabled: Option<bool>,
     pub host_root: Option<String>,
+    pub k8s: crate::config::K8sConfig,
 }
 
 impl AgentOptions {
@@ -36,6 +37,7 @@ impl AgentOptions {
             mssql: c.mssql.clone(),
             iis_enabled: c.iis.enabled,
             host_root: c.host_root.clone(),
+            k8s: c.kubernetes.clone(),
         }
     }
 }
@@ -52,6 +54,9 @@ pub struct Agent {
     collector: Arc<Mutex<Collector>>,
     mssql: Arc<Mssql>,
     iis: Arc<Iis>,
+    kube: Option<Arc<crate::k8s::Kube>>,
+    /// Set by `hello` when the Kubernetes API answered.
+    kube_ok: std::sync::atomic::AtomicBool,
 }
 
 struct StreamHandle {
@@ -73,7 +78,13 @@ impl Agent {
             None
         };
         let collector = Collector::new(opts.host_root.clone(), true);
+        let kube = crate::k8s::Kube::detect(&opts.k8s, opts.host_root.as_deref()).map(Arc::new);
+        if let Some(k) = &kube {
+            tracing::info!("kubernetes credentials found ({})", k.source);
+        }
         Arc::new(Self {
+            kube,
+            kube_ok: Default::default(),
             mssql: Arc::new(Mssql::new(opts.mssql.clone(), opts.host_root.clone())),
             iis: Arc::new(Iis::new(opts.iis_enabled)),
             collector: Arc::new(Mutex::new(collector)),
@@ -87,6 +98,21 @@ impl Agent {
             Some(d) => d.version().await,
             None => None,
         };
+        let kube_version = match &self.kube {
+            Some(k) => match tokio::time::timeout(Duration::from_secs(6), k.version()).await {
+                Ok(Ok(v)) => Some(v),
+                Ok(Err(e)) => {
+                    tracing::warn!("kubernetes API not usable: {e:#}");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!("kubernetes API did not answer within 6s");
+                    None
+                }
+            },
+            None => None,
+        };
+        self.kube_ok.store(kube_version.is_some(), std::sync::atomic::Ordering::Relaxed);
         let mssql = self.mssql.clone();
         let iis = self.iis.clone();
         let col = self.collector.clone();
@@ -97,6 +123,8 @@ impl Agent {
                 docker_version,
                 mssql: mssql.detected(),
                 iis: iis.detected(),
+                kubernetes: kube_version.is_some(),
+                kubernetes_version: kube_version,
             };
             let c = col.lock().unwrap_or_else(|e| e.into_inner());
             c.hello(caps, interval)
@@ -202,10 +230,17 @@ impl Agent {
             if let Some(d) = &self.docker {
                 sample.docker = d.summary().await;
             }
+            if let (Some(k), true) = (&self.kube, self.kube_ok.load(std::sync::atomic::Ordering::Relaxed)) {
+                sample.k8s = k.summary().await;
+            }
             if out.send(AgentMsg::Metrics(sample)).await.is_err() {
                 return;
             }
         }
+    }
+
+    fn kube(&self) -> Result<&crate::k8s::Kube> {
+        self.kube.as_deref().ok_or_else(|| anyhow!("Kubernetes was not found on this server"))
     }
 
     fn docker(&self) -> Result<&DockerCtl> {
@@ -244,6 +279,19 @@ impl Agent {
             Request::DockerInspect { id } => self.docker()?.inspect(&id).await,
             Request::DockerContainerAction { id, action } => self.docker()?.action(&id, action).await,
             Request::DockerContainerRemove { id, force, volumes } => self.docker()?.remove(&id, force, volumes).await,
+            Request::K8sOverview => self.kube()?.overview().await,
+            Request::K8sNamespaces => self.kube()?.namespaces().await,
+            Request::K8sPods { namespace } => self.kube()?.pods(namespace.as_deref()).await,
+            Request::K8sWorkloads { namespace } => self.kube()?.workloads(namespace.as_deref()).await,
+            Request::K8sServices { namespace } => self.kube()?.services(namespace.as_deref()).await,
+            Request::K8sEvents { namespace } => self.kube()?.events(namespace.as_deref()).await,
+            Request::K8sGet { kind, namespace, name } => self.kube()?.get_object(kind, namespace.as_deref(), &name).await,
+            Request::K8sPodDelete { namespace, name, force } => self.kube()?.delete_pod(&namespace, &name, force).await,
+            Request::K8sRolloutRestart { kind, namespace, name } => self.kube()?.rollout_restart(kind, &namespace, &name).await,
+            Request::K8sScale { kind, namespace, name, replicas } => self.kube()?.scale(kind, &namespace, &name, replicas).await,
+            Request::K8sNodeCordon { name, unschedulable } => self.kube()?.cordon(&name, unschedulable).await,
+            Request::DockerContainerRename { id, name } => self.docker()?.rename(&id, &name).await,
+            Request::DockerContainerRecreate { id, pull } => self.docker()?.recreate(&id, pull, self.opts.host_root.as_deref()).await,
             Request::DockerImages => self.docker()?.images().await,
             Request::DockerImageRemove { id, force } => self.docker()?.remove_image(&id, force).await,
             Request::DockerVolumes => self.docker()?.volumes().await,
@@ -309,6 +357,12 @@ impl Agent {
             }
             StreamRequest::ContainerStats { id } => self.docker()?.stream_stats(&id, sid, out).await,
             StreamRequest::ContainerStatsAll {} => self.docker()?.stream_stats_all(sid, out).await,
+            StreamRequest::K8sPodLogs { namespace, name, container, tail, since, follow, previous } => {
+                self.kube()?.stream_logs(&namespace, &name, container, tail, since, follow, previous, sid, out).await
+            }
+            StreamRequest::K8sPodExec { namespace, name, container, cmd, cols, rows } => {
+                self.kube()?.exec(&namespace, &name, container, cmd, cols, rows, sid, out, ctl).await
+            }
             StreamRequest::SystemLive { interval_ms } => {
                 let interval = Duration::from_millis(interval_ms.clamp(1000, 60_000) as u64);
                 let root = self.opts.host_root.clone();

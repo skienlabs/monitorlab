@@ -6,7 +6,7 @@ import { BrandFooter, BrandProvider, useBrand } from "./brand";
 import { GeneralSettings } from "./pages/GeneralSettings";
 import { ThemeProvider, useTheme } from "./theme";
 import { ServersProvider, useServers } from "./servers";
-import { ConfirmProvider, Loading, Menu, ToastProvider } from "./components/ui";
+import { Avatar, ConfirmProvider, Loading, Menu, ToastProvider } from "./components/ui";
 import { ForcedPassword, Login } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { ServerPage } from "./pages/ServerPage";
@@ -16,6 +16,7 @@ import { AdminUsers } from "./pages/AdminUsers";
 import { AdminRoles } from "./pages/AdminRoles";
 import { AuditPage } from "./pages/AuditPage";
 import { AccountPage } from "./pages/AccountPage";
+import { PodPage } from "./pages/PodPage";
 import { AlertsPage } from "./pages/AlertsPage";
 import { AlertSettings } from "./pages/AlertSettings";
 import { useAlertCount } from "./servers";
@@ -35,9 +36,8 @@ function ThemeToggle() {
 function UserMenu() {
   const { me, logout } = useAuth();
   if (!me) return null;
-  const initial = (me.name || me.email).trim().charAt(0).toUpperCase();
   return (
-    <Menu trigger={<span className="avatar">{initial}</span>} label="Account">
+    <Menu trigger={<Avatar src={me.avatar} name={me.name || me.email} />} label="Account">
       <div className="menu-label">
         <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 500 }}>{me.name || me.email}</div>
         <div>{me.email}</div>
@@ -45,7 +45,7 @@ function UserMenu() {
       </div>
       <hr />
       <Link to="/account">
-        <KeyRound size={18} /> Account & password
+        <KeyRound size={18} /> Profile & password
       </Link>
       <button onClick={logout}>
         <LogOut size={18} /> Sign out
@@ -107,7 +107,7 @@ function Nav({ open }: { open: boolean }) {
       )}
       <div className="nav-section">You</div>
       <NavLink to="/account" data-accent="disk">
-        <UserRound size={20} /> Account
+        <UserRound size={20} /> Profile
       </NavLink>
       <BrandFooter />
     </nav>
@@ -172,6 +172,7 @@ function Routed() {
           <Route path="/" element={<Overview />} />
           <Route path="/servers/:id" element={<ServerPage />} />
           <Route path="/servers/:id/containers/:cid" element={<ContainerPage />} />
+          <Route path="/servers/:id/k8s/:ns/:pod" element={<PodPage />} />
           <Route path="/admin/servers" element={<Guard perm="servers.manage"><AdminServers /></Guard>} />
           <Route path="/admin/general" element={<Guard perm="users.manage"><GeneralSettings /></Guard>} />
           <Route path="/admin/users" element={<Guard perm="users.manage"><AdminUsers /></Guard>} />

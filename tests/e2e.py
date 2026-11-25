@@ -14,7 +14,8 @@ Requirements: the hub's local agent can reach Docker, `docker` CLI on this machi
 same engine, and this machine can run the agent binary (for the enrollment tests).
 Creates and removes its own containers/volumes/users/servers (all prefixed "e2e-").
 """
-import argparse, asyncio, base64, json, os, secrets, ssl, subprocess, sys, threading, time
+import argparse
+import asyncio, base64, json, os, secrets, ssl, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
@@ -128,6 +129,84 @@ class Hook(BaseHTTPRequestHandler):
         pass
 
 
+def k8s_checks(hub, admin, sid, mock_dir):
+    import requests as rq
+    mock = rq.Session()
+    mock.trust_env = False
+    mock.verify = os.path.join(mock_dir, "ca.crt")
+    mock.cert = (os.path.join(mock_dir, "client.crt"), os.path.join(mock_dir, "client.key"))
+    kubeconfig = open(os.path.join(mock_dir, "kubeconfig")).read()
+    port = kubeconfig.split("server: https://127.0.0.1:")[1].split()[0]
+    mstate = lambda: mock.get(f"https://127.0.0.1:{port}/_mock/state", timeout=5).json()
+
+    s = wait_for(lambda: (lambda x: x if (x[1].get("hello") or {}).get("capabilities", {}).get("kubernetes") else None)(admin.get(f"/servers/{sid}")), 20)
+    check("kubernetes capability detected", bool(s), admin.get(f"/servers/{sid}")[1].get("hello"))
+    rpc = lambda body: admin.post(f"/servers/{sid}/rpc", body)
+    code, o = rpc({"op": "k8s_overview"})
+    check("cluster overview", code == 200 and o["distribution"] == "k3s" and o["summary"]["nodes_ready"] == 1 and o["metrics_available"], (code, o))
+    n = o["nodes"][0] if code == 200 else {}
+    check("node capacity and usage parsed", n.get("cpu_capacity") == 8000 and abs((n.get("cpu_used") or 0) - 1234.57) < 1 and n.get("mem_used") == 10485760 * 1024, n)
+    check("failing pod reported", code == 200 and o["summary"]["pods_failing"] == 1 and "default/api-5f6d7c8b9-xyz12: CrashLoopBackOff" in o["summary"]["failing"], o.get("summary"))
+    code, d = rpc({"op": "k8s_pods"})
+    pods = {p["name"]: p for p in d.get("pods", [])} if code == 200 else {}
+    api = pods.get("api-5f6d7c8b9-xyz12", {})
+    check("pods with status, restarts, metrics", api.get("status") == "CrashLoopBackOff" and api.get("restarts") == 7 and api.get("failing") and pods.get("web-7d4b9c6f5-abcde", {}).get("ready") == "2/2" and pods["web-7d4b9c6f5-abcde"]["cpu"] == 15, api)
+    code, d = rpc({"op": "k8s_pods", "namespace": "kube-system"})
+    check("namespace filter", code == 200 and {p["namespace"] for p in d["pods"]} == {"kube-system"}, d)
+    code, d = rpc({"op": "k8s_workloads"})
+    check("workloads with degraded flag", code == 200 and any(w["name"] == "api" and w["degraded"] for w in d) and any(w["name"] == "web" and not w["degraded"] for w in d), d)
+    code, d = rpc({"op": "k8s_services"})
+    check("services", code == 200 and d[0]["ports"] == ["80:30080/TCP"], d)
+    code, d = rpc({"op": "k8s_events"})
+    check("events newest first", code == 200 and d[0]["reason"] == "BackOff" and d[0]["count"] == 42, d)
+    code, d = rpc({"op": "k8s_get", "kind": "pod", "namespace": "default", "name": "api-5f6d7c8b9-xyz12"})
+    check("pod details without managedFields, with events", code == 200 and "managedFields" not in d["object"]["metadata"] and d["events"][0]["reason"] == "BackOff", d)
+    code, d = rpc({"op": "k8s_get", "kind": "pod", "namespace": "default", "name": "nope"})
+    check("missing pod gives the API's message", code != 200 and "not found" in str(d), (code, d))
+    out = stream(hub, admin.cookie(), sid, {"kind": "k8s_pod_logs", "namespace": "default", "name": "web-7d4b9c6f5-abcde", "container": "sidecar", "tail": 3}, dur=2.5)
+    lines = [l for msg in out if msg.get("t") == "data" for l in msg["d"].get("lines", [])] if isinstance(out, list) else []
+    check("pod log stream (container, tail, follow, timestamps)", any("web-7d4b9c6f5-abcde/sidecar line 0" in l["text"] for l in lines) and any("live line" in l["text"] for l in lines) and all(l.get("ts") for l in lines), out)
+    out = stream(hub, admin.cookie(), sid, {"kind": "k8s_pod_logs", "namespace": "default", "name": "api-5f6d7c8b9-xyz12", "previous": True, "follow": False}, dur=2)
+    lines = [l for msg in out if msg.get("t") == "data" for l in msg["d"].get("lines", [])] if isinstance(out, list) else []
+    check("previous container logs", any("previous" in l["text"] for l in lines), out)
+    out = stream(hub, admin.cookie(), sid, {"kind": "k8s_pod_exec", "namespace": "default", "name": "web-7d4b9c6f5-abcde", "container": "web"},
+                 sends=[{"t": "resize", "cols": 101, "rows": 33}, {"t": "input", "b64": base64.b64encode(b"ls -la\n").decode()}], dur=3)
+    txt = b"".join(base64.b64decode(msg["d"]["b64"]) for msg in out if isinstance(out, list) and msg["t"] == "data" and "b64" in msg["d"]).decode(errors="replace") if isinstance(out, list) else ""
+    check("pod exec terminal (stdin, stdout, resize)", "mock shell in web-7d4b9c6f5-abcde/web" in txt and "ls -la" in txt and "[resize 101x33]" in txt, txt or out)
+    check("exec input reached the API server", "ls -la" in mstate()["exec_input"], mstate())
+    code, d = rpc({"op": "k8s_rollout_restart", "kind": "deployment", "namespace": "default", "name": "web"})
+    p = [x for x in mstate()["patches"] if x[0] == "deployments" and x[1] == "web"]
+    check("rollout restart patches restartedAt", code == 200 and p and p[-1][2] == "application/strategic-merge-patch+json" and "kubectl.kubernetes.io/restartedAt" in json.dumps(p[-1][3]), (code, d, p))
+    code, d = rpc({"op": "k8s_scale", "kind": "deployment", "namespace": "default", "name": "api", "replicas": 3})
+    p = [x for x in mstate()["patches"] if x[0] == "deployments" and x[1] == "api"]
+    check("scale deployment", code == 200 and p and p[-1][3] == {"spec": {"replicas": 3}} and p[-1][2] == "application/merge-patch+json", (code, d, p))
+    code, d = rpc({"op": "k8s_scale", "kind": "daemon_set", "namespace": "default", "name": "x", "replicas": 3})
+    check("daemon sets cannot be scaled", code != 200, (code, d))
+    code, d = rpc({"op": "k8s_node_cordon", "name": "k3s-node-1", "unschedulable": True})
+    check("cordon node", code == 200 and mstate()["cordoned"] == ["k3s-node-1"], (code, d))
+    rpc({"op": "k8s_node_cordon", "name": "k3s-node-1", "unschedulable": False})
+    code, d = rpc({"op": "k8s_pod_delete", "namespace": "default", "name": "api-5f6d7c8b9-xyz12"})
+    check("delete pod", code == 200 and ["default", "api-5f6d7c8b9-xyz12"] in mstate()["deleted"], (code, d))
+    m = wait_for(lambda: (lambda x: x if x and x.get("k8s") else None)(admin.get(f"/servers/{sid}")[1].get("latest")), 20)
+    check("k8s summary in metrics", bool(m) and m["k8s"]["nodes"] == 1, m and m.get("k8s"))
+    fired = wait_for(lambda: any("pod(s) failing" in x["message"] for x in admin.get("/alerts?state=active")[1]), 45)
+    check("alert for failing pods", bool(fired), admin.get("/alerts?state=active")[1])
+    # RBAC: a Viewer can read the cluster but not change it or open a shell.
+    email = f"k8sviewer-{secrets.token_hex(3)}@x.test"
+    code, roles = admin.get("/roles")
+    viewer = next(r for r in roles if r["name"] == "Viewer")
+    check("Viewer role gained k8s.view on upgrade", "k8s.view" in viewer["permissions"] and "k8s.control" not in viewer["permissions"], viewer["permissions"])
+    code, u = admin.post("/users", {"email": email, "name": "K8s Viewer", "role_id": viewer["id"], "password": "Viewer-Pass-123", "must_change_password": False})
+    v = Client(hub)
+    v.login(email, "Viewer-Pass-123")
+    check("viewer can list pods", v.post(f"/servers/{sid}/rpc", {"op": "k8s_pods"})[0] == 200)
+    check("viewer cannot delete pods", v.post(f"/servers/{sid}/rpc", {"op": "k8s_pod_delete", "namespace": "default", "name": "web-7d4b9c6f5-abcde"})[0] == 403)
+    out = stream(hub, v.cookie(), sid, {"kind": "k8s_pod_exec", "namespace": "default", "name": "web-7d4b9c6f5-abcde"}, dur=1.5)
+    check("viewer cannot open a pod terminal", isinstance(out, list) and any(m.get("t") == "end" and "permission" in str(m).lower() for m in out) or (isinstance(out, str) and "403" in out), out)
+    if code == 200:
+        admin.req("DELETE", f"/users/{u['id']}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hub", required=True)
@@ -138,6 +217,7 @@ def main():
     ap.add_argument("--webhook-host", default="127.0.0.1",
                     help="address the HUB uses to reach this machine's webhook sink "
                          "(e.g. the Docker network gateway when the hub runs on a bridge network)")
+    ap.add_argument("--k8s-mock-dir", help="directory of tests/mock_k8s.py (hub started with its kubeconfig)")
     a = ap.parse_args()
     tag = "e2e-" + secrets.token_hex(3)
     hub = a.hub.rstrip("/")
@@ -230,6 +310,40 @@ def main():
             check(f"container {action}", code == 200, (code, d))
         state = sh("docker", "inspect", "--format", "{{.State.Status}}", cname)
         check("container running after start", state == "running", state)
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_rename", "id": cname, "name": f"{cname}-ren"})
+        check("container rename", code == 200 and sh("docker", "inspect", "--format", "{{.Name}}", f"{cname}-ren") == f"/{cname}-ren", (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_rename", "id": f"{cname}-ren", "name": "bad name!"})
+        check("invalid container name rejected", code != 200, (code, d))
+        admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_rename", "id": f"{cname}-ren", "name": cname})
+
+        # Recreate keeps settings, named + anonymous volumes and networks.
+        rname, rnet, rvol = f"{tag}-rc", f"{tag}-net", f"{tag}-rcvol"
+        sh("docker", "network", "create", rnet)
+        sh("docker", "run", "-d", "--name", rname, "--network", rnet, "--network-alias", "svc-alias", "-e", "KEEP=me",
+           "-v", f"{rvol}:/data", "-v", "/anon", "--label", f"com.docker.compose.project={tag}", "--restart", "unless-stopped",
+           img, "sh", "-c", "echo hi > /anon/marker; echo v1 > /data/v; sleep 3600")
+        created_containers.append(rname)
+        time.sleep(1)
+        old_id = sh("docker", "inspect", "--format", "{{.Id}}", rname)
+        anon = sh("docker", "inspect", "--format", "{{range .Mounts}}{{if eq .Destination \"/anon\"}}{{.Name}}{{end}}{{end}}", rname)
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_recreate", "id": rname, "pull": False})
+        new_id = sh("docker", "inspect", "--format", "{{.Id}}", rname, check_rc=False)
+        check("recreate returns a new container", code == 200 and d.get("id") == new_id and new_id != old_id, (code, d))
+        insp = json.loads(sh("docker", "inspect", rname))[0] if new_id else {}
+        check("recreate keeps env, labels, restart policy", "KEEP=me" in insp.get("Config", {}).get("Env", []) and insp["Config"]["Labels"].get("com.docker.compose.project") == tag and insp["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped", insp.get("Config", {}).get("Env"))
+        nets = insp.get("NetworkSettings", {}).get("Networks", {})
+        check("recreate keeps network and alias", rnet in nets and "svc-alias" in (nets[rnet].get("Aliases") or []), nets)
+        check("recreate keeps named and anonymous volumes", sh("docker", "exec", rname, "cat", "/data/v") == "v1" and sh("docker", "exec", rname, "cat", "/anon/marker") == "hi", anon)
+        check("recreate leaves no backup container", not sh("docker", "ps", "-aq", "--filter", f"name={rname}-old"), sh("docker", "ps", "-a", "--format", "{{.Names}}"))
+        check("recreate keeps it running", insp.get("State", {}).get("Running") is True, insp.get("State"))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_recreate", "id": rname, "pull": True})
+        check("recreate with image pull", code == 200 and d.get("pulled") is True, (code, d))
+        sh("docker", "rm", "-f", rname)
+        created_containers.remove(rname)
+        sh("docker", "volume", "rm", rvol, check_rc=False)
+        if anon:
+            sh("docker", "volume", "rm", anon, check_rc=False)
+        sh("docker", "network", "rm", rnet, check_rc=False)
         code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_remove", "id": cname})
         check("remove running container without force fails", code == 502, (code, d))
         code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_remove", "id": cname, "force": True, "volumes": True})
@@ -364,10 +478,48 @@ def main():
         check("product name restored", code == 200 and Client(hub).get("/branding")[1]["name"] == original, (code, d))
 
         # ------------------------------------------------------------ audit
+        section("Profile")
+        code, d = admin.req("PUT", "/auth/profile", {"name": "E2E Admin", "title": "SRE", "phone": "+91 98765 43210"})
+        code2, me = admin.get("/auth/me")
+        check("profile update", code == 200 and me.get("name") == "E2E Admin" and me.get("title") == "SRE" and me.get("phone") == "+91 98765 43210", (code, me))
+        code, d = admin.req("PUT", "/auth/profile", {"name": "E2E Admin", "email": "other@x.test", "current_password": "wrong-password-123"})
+        check("email change needs the current password", code == 400, (code, d))
+        code, d = admin.req("PUT", "/auth/profile", {"name": "x" * 200})
+        check("over-long name rejected", code == 400, (code, d))
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        r = admin.s.put(hub + "/api/auth/avatar", data=png, headers={"x-monitorlab-csrf": "1", "content-type": "image/png"})
+        _, me = admin.get("/auth/me")
+        check("upload profile photo", r.status_code == 200 and (me.get("avatar") or "").startswith(f"/api/users/{me['id']}/avatar"), (r.status_code, r.text))
+        r2 = admin.s.get(hub + me["avatar"])
+        check("photo served with nosniff and image type", r2.status_code == 200 and r2.content == png and r2.headers.get("content-type") == "image/png" and r2.headers.get("x-content-type-options") == "nosniff", dict(r2.headers))
+        r3 = Client(hub).s.get(hub + me["avatar"])
+        check("photo needs a session", r3.status_code == 401, r3.status_code)
+        r4 = admin.s.put(hub + "/api/auth/avatar", data=b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>", headers={"x-monitorlab-csrf": "1", "content-type": "image/png"})
+        check("SVG / non-image upload rejected", r4.status_code == 400, (r4.status_code, r4.text))
+        r5 = admin.s.put(hub + "/api/auth/avatar", data=png + b"0" * (600 * 1024), headers={"x-monitorlab-csrf": "1", "content-type": "image/png"})
+        check("oversized photo rejected", r5.status_code in (400, 413), r5.status_code)
+        r6 = admin.s.put(hub + "/api/auth/avatar", data=png, headers={"content-type": "image/png"})
+        check("photo upload needs CSRF header", r6.status_code == 403, r6.status_code)
+        other = Client(hub)
+        other.login(a.email, a.password)
+        code, ss = admin.get("/auth/sessions")
+        check("sessions listed with current marked", code == 200 and sum(1 for x in ss if x["current"]) == 1 and len(ss) >= 2, ss)
+        victim = next((x for x in ss if not x["current"]), None)
+        code, d = admin.req("DELETE", f"/auth/sessions/{victim['id']}") if victim else (0, None)
+        check("revoke one session", code == 200, (code, d))
+        code, d = admin.post("/auth/sessions/revoke-others")
+        check("revoke all other sessions", code == 200 and other.get("/auth/me")[0] == 401, (code, d))
+        code, d = admin.req("DELETE", "/auth/avatar")
+        check("remove profile photo", code == 200 and admin.get("/auth/me")[1].get("avatar") is None, (code, d))
+
+        if a.k8s_mock_dir:
+            section("Kubernetes (mock API server)")
+            k8s_checks(hub, admin, sid, a.k8s_mock_dir)
+
         section("Audit")
         code, d = admin.get("/audit?limit=200")
         actions = {e["action"] for e in d} if code == 200 else set()
-        for need in ["login", "login_failed", "container_exec", "docker_container_remove", "docker_prune", "user_created", "server_added", "channel_created", "branding_updated"]:
+        for need in ["login", "login_failed", "container_exec", "docker_container_recreate", "profile_updated", "docker_container_remove", "docker_prune", "user_created", "server_added", "channel_created", "branding_updated"]:
             check(f"audit contains {need}", need in actions, sorted(actions))
     finally:
         section("Cleanup")

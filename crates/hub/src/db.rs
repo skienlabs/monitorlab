@@ -116,6 +116,14 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     );
     "#,
+    // v3: profiles
+    r#"
+    ALTER TABLE users ADD COLUMN avatar BLOB NULL;
+    ALTER TABLE users ADD COLUMN avatar_type TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN avatar_version INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 impl Db {

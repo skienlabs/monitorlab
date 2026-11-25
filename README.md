@@ -7,9 +7,10 @@ It combines what you would otherwise run as Prometheus + Grafana + Dozzle + Port
 
 | | |
 |---|---|
-| **Linux servers** | CPU / memory / swap / load / disks / network / disk I/O · Docker containers (grouped by compose stack), live logs, terminal, live stats, start/stop/restart/pause/kill/delete · images, volumes, networks · `docker system df` with one-click cleanup (dangling/unused images, stopped containers, unused volumes, networks, build cache) · SQL Server on Linux (service state, CPU/RAM, error log) |
+| **Linux servers** | CPU / memory / swap / load / disks / network / disk I/O · Docker containers (grouped by compose stack), live CPU/memory per container, live logs, terminal, live stats, start/stop/restart/pause/resume/kill/rename/recreate (with image pull)/delete, bulk actions on selected containers · images, volumes, networks · `docker system df` with one-click cleanup (dangling/unused images, stopped containers, unused volumes, networks, build cache) · SQL Server on Linux (service state, CPU/RAM, error log) |
+| **Kubernetes (k3s / k8s)** | Nodes (ready, cordon, CPU/memory/pods), deployments / stateful sets / daemon sets (rolling restart, scale), pods (status, restarts, CPU/memory, live logs incl. previous container, terminal, delete), services, warning events · alerts for not-ready nodes, failing pods and degraded workloads |
 | **Windows servers** | System metrics · IIS sites, bindings, app pools and worker processes (start/stop/restart site, recycle pool) · live W3C logs per site · SQL Server instances (service state, CPU/RAM, version, live ERRORLOG) |
-| **Hub** | Web console, history charts (15 min → 30 days), alerting (email, Teams, Slack, webhooks), users, roles and per-server access, audit log, agent enrollment, TLS with certificate pinning |
+| **Hub** | Web console, profiles with photo and session management, history charts (15 min → 30 days), alerting (email, Teams, Slack, webhooks), users, roles and per-server access, audit log, agent enrollment, TLS with certificate pinning |
 
 ## Architecture
 
@@ -147,11 +148,14 @@ Permissions (each agent request maps to exactly one, enforced on the hub):
 |---|---|
 | `servers.view` | dashboards, metrics, charts, processes |
 | `docker.view` · `mssql.view` · `iis.view` | read-only views of those subsystems |
-| `logs.view` | container, IIS and SQL Server logs |
+| `logs.view` | container, pod, IIS and SQL Server logs |
 | `containers.control` | start / stop / restart / pause / kill |
 | `iis.control` | start / stop sites, recycle / start / stop app pools |
 | `containers.exec` | interactive terminal inside containers (audited) |
-| `containers.delete` | delete containers |
+| `containers.delete` | delete and recreate containers |
+| `k8s.view` | Kubernetes nodes, workloads, pods, services, events |
+| `k8s.control` | rolling restart, scale, delete pods, cordon / uncordon nodes |
+| `k8s.exec` | interactive terminal inside pods (audited) |
 | `docker.cleanup` | delete images / volumes / networks, prune, clear build cache |
 | `alerts.manage` | alert thresholds, SMTP, notification channels, acknowledge alerts |
 | `servers.manage` · `users.manage` · `audit.view` | administration |
@@ -217,7 +221,17 @@ enabled = true
 
 [iis]
 # enabled = true          # default: auto-detect (Windows)
+
+[kubernetes]
+# enabled = true          # default: auto-detect
+# kubeconfig = "/etc/monitorlab/kubeconfig"
 ```
+
+## Kubernetes (k3s)
+
+The agent finds the cluster by itself: `kubernetes.kubeconfig`, then `KUBECONFIG`, then k3s's `/etc/rancher/k3s/k3s.yaml`, then `~/.kube/config`, then the pod's service account when the agent runs inside the cluster. On a k3s server, `monitorlab-agent install` copies the k3s kubeconfig to `/etc/monitorlab/kubeconfig` (readable only by the agent's service user), so nothing else is needed. The hub's own built-in agent reads `/host/etc/rancher/k3s/k3s.yaml` and reaches an API server that listens on the host's `127.0.0.1` through the Docker host gateway.
+
+CPU and memory figures come from metrics-server, which k3s installs by default. Credential plugins (`exec:` users, as used by EKS/GKE) aren't supported; use a service-account token or client certificate instead.
 
 ## Testing
 
@@ -228,12 +242,17 @@ cargo test --workspace                      # unit tests (protocol, parsers, log
 pip install requests websockets
 python3 tests/e2e.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --agent-bin ./monitorlab-agent
 
+# Kubernetes checks against a fake k3s API server (TLS + client certificates, logs, exec):
+pip install aiohttp
+python3 tests/mock_k8s.py --dir /tmp/mockk8s &        # start the hub with KUBECONFIG=/tmp/mockk8s/kubeconfig
+python3 tests/e2e.py … --k8s-mock-dir /tmp/mockk8s
+
 # browser walk-through of every page (screenshots + fails on console errors)
 pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 99 checks. It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 123 checks (149 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 
@@ -270,4 +289,4 @@ Adding a capability (Kubernetes, PostgreSQL, alerts, …) follows one pattern:
 
 ## Roadmap ideas
 
-Kubernetes (pods, deployments, events, pod logs/exec) · per-server alert overrides and maintenance windows · Windows services and Event Log · multi-container merged log view · SSO (OIDC) · hub on Windows.
+per-server alert overrides and maintenance windows · Windows services and Event Log · multi-container merged log view · SSO (OIDC) · hub on Windows.

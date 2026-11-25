@@ -35,6 +35,8 @@ webpki-roots = "0.26"
 sysinfo = { version = "0.33", default-features = false, features = ["system", "disk", "network", "user"] }
 bollard = { version = "0.18", default-features = false, features = ["http", "pipe"] }
 toml = "0.8"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-manual-roots-no-provider"] }
 roxmltree = "0.20"
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls"], optional = true }
 tokio-util = { version = "0.7", features = ["compat"], optional = true }

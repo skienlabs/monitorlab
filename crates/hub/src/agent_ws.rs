@@ -269,6 +269,7 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         mssql: Default::default(),
         iis_enabled: Some(false),
         host_root: state.cfg.host_root.clone(),
+        k8s: Default::default(),
     };
     tokio::spawn(async move {
         let agent = monitorlab_agent::Agent::new(opts);

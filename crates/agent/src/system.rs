@@ -212,6 +212,7 @@ impl Collector {
             docker: None,
             mssql: None,
             iis: None,
+            k8s: None,
         }
     }
 

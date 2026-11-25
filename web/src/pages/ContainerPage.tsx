@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Activity, ChevronRight, CirclePlay, CircleStop, Cpu, Eye, EyeOff, FileText, Info, ListTree, MemoryStick, Network, RotateCcw, SquareTerminal, Trash2 } from "lucide-react";
+import { Activity, ChevronRight, CirclePlay, CircleStop, Cpu, Eye, EyeOff, FileText, Info, ListTree, MemoryStick, Network, Pause, PencilLine, Play, RefreshCcwDot, RotateCcw, SquareTerminal, Trash2, Zap } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Server } from "../types";
@@ -9,7 +9,7 @@ import { LogViewer } from "../components/LogViewer";
 import { ContainerTerminal } from "../components/Terminal";
 import { TimeChart } from "../components/Chart";
 import { ChartCard } from "./ServerPage";
-import { useContainerActions } from "./DockerTabs";
+import { RenameDialog, useContainerActions } from "./DockerTabs";
 import { bytes, dateTime, pct, rate, shortId } from "../format";
 
 interface Sample {
@@ -248,6 +248,7 @@ export function ContainerPage() {
   const server = usePoll(() => api<Server>(`/servers/${serverId}`), [serverId], 15_000);
   const insp = usePoll(() => rpc<any>(serverId, { op: "docker_inspect", id: cid }), [serverId, cid], 5000);
   const actions = useContainerActions(serverId, insp.reload);
+  const [renaming, setRenaming] = useState(false);
 
   const tabs = [
     { key: "logs", label: "Logs", icon: <FileText size={17} />, show: can("logs.view") },
@@ -263,6 +264,7 @@ export function ContainerPage() {
   const name = String(d.Name ?? "").replace(/^\//, "") || shortId(d.Id);
   const state: string = d.State?.Status ?? "unknown";
   const running = state === "running";
+  const paused = state === "paused";
   const c = { id: d.Id, name } as any;
   const s = server.data;
 
@@ -285,22 +287,42 @@ export function ContainerPage() {
           </div>
           <div className="sub small mono" style={{ overflowWrap: "anywhere" }}>{d.Config?.Image}</div>
         </div>
-        {can("containers.control") && (
-          <div className="row wrap">
-            {running ? (
-              <button className="btn outlined" onClick={() => actions.stop(c)}><CircleStop size={17} /> Stop</button>
-            ) : (
-              <button className="btn outlined" onClick={() => actions.start(c)}><CirclePlay size={17} /> Start</button>
-            )}
-            <button className="btn tonal" onClick={() => actions.restart(c)}><RotateCcw size={17} /> Restart</button>
-            {can("containers.delete") && (
-              <button className="icon-btn danger" title="Delete container" aria-label="Delete container" onClick={() => actions.remove(c, () => nav(`/servers/${serverId}?tab=containers`))}>
-                <Trash2 size={18} />
-              </button>
-            )}
-          </div>
-        )}
       </div>
+
+      {(can("containers.control") || can("containers.delete")) && (
+        <div className="card action-bar" style={{ padding: 8, marginBottom: 16 }} role="toolbar" aria-label="Container actions">
+          {can("containers.control") && (
+            <>
+              <button className="btn sm go" disabled={running || paused} onClick={() => actions.start(c)}><CirclePlay size={16} /> Start</button>
+              <button className="btn sm" disabled={!running} onClick={() => actions.stop(c)}><CircleStop size={16} /> Stop</button>
+              <button className="btn sm danger-text" disabled={!running && !paused} onClick={() => actions.kill(c)}><Zap size={16} /> Kill</button>
+              <button className="btn sm" disabled={paused} onClick={() => actions.restart(c)}><RotateCcw size={16} /> Restart</button>
+              <button className="btn sm" disabled={!running} onClick={() => actions.pause(c)}><Pause size={16} /> Pause</button>
+              <button className="btn sm" disabled={!paused} onClick={() => actions.unpause(c)}><Play size={16} /> Resume</button>
+              <span className="sep" />
+              <button className="btn sm" onClick={() => setRenaming(true)}><PencilLine size={16} /> Rename</button>
+            </>
+          )}
+          {can("containers.delete") && (
+            <>
+              <button className="btn sm" onClick={() => actions.recreate(c, () => insp.reload())}><RefreshCcwDot size={16} /> Recreate</button>
+              <span className="sep" />
+              <button className="btn sm danger-text" onClick={() => actions.remove(c, () => nav(`/servers/${serverId}?tab=containers`))}><Trash2 size={16} /> Remove</button>
+            </>
+          )}
+        </div>
+      )}
+      {renaming && (
+        <RenameDialog
+          serverId={serverId}
+          c={c}
+          onClose={() => setRenaming(false)}
+          onDone={(n) => {
+            setRenaming(false);
+            nav(`/servers/${serverId}/containers/${encodeURIComponent(n)}?${params.toString()}`, { replace: true });
+          }}
+        />
+      )}
 
       <div className="tabs" role="tablist">
         {tabs.map((t) => (

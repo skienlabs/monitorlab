@@ -19,6 +19,7 @@ interface Rules {
   containers_unhealthy: boolean;
   mssql_stopped: boolean;
   iis_stopped: boolean;
+  k8s_problems: boolean;
 }
 interface Channel {
   id: number;
@@ -106,6 +107,7 @@ function RulesCard() {
         <label className="check"><input type="checkbox" checked={r.containers_unhealthy} onChange={(e) => setR({ ...r, containers_unhealthy: e.target.checked })} /> Unhealthy or restart-looping Docker containers (warning)</label>
         <label className="check"><input type="checkbox" checked={r.mssql_stopped} onChange={(e) => setR({ ...r, mssql_stopped: e.target.checked })} /> SQL Server instance stopped (critical)</label>
         <label className="check"><input type="checkbox" checked={r.iis_stopped} onChange={(e) => setR({ ...r, iis_stopped: e.target.checked })} /> IIS site or application pool stopped (warning)</label>
+        <label className="check"><input type="checkbox" checked={r.k8s_problems ?? true} onChange={(e) => setR({ ...r, k8s_problems: e.target.checked })} /> Kubernetes: node not ready (critical), failing pods or degraded workloads (warning)</label>
       </div>
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="btn filled" onClick={save} disabled={busy}>{busy && <Spinner />} Save rules</button>

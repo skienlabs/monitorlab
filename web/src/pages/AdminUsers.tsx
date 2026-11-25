@@ -3,7 +3,7 @@ import { Ban, CircleCheck, KeyRound, MoreVertical, Pencil, Plus, Trash2, Users, 
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { useServers } from "../servers";
-import { CopyButton, Dialog, Empty, Loading, Menu, SearchBox, Spinner, useConfirm, usePoll, useToast } from "../components/ui";
+import { Avatar, CopyButton, Dialog, Empty, Loading, Menu, SearchBox, Spinner, useConfirm, usePoll, useToast } from "../components/ui";
 import { ago } from "../format";
 
 interface User {
@@ -12,6 +12,8 @@ interface User {
   name: string;
   role_id: number;
   role: string;
+  avatar?: string | null;
+  title?: string;
   server_scope: string[] | null;
   disabled: boolean;
   must_change_password: boolean;
@@ -214,10 +216,10 @@ export function AdminUsers() {
                 <tr key={u.id}>
                   <td>
                     <div className="row" style={{ gap: 12 }}>
-                      <span className="avatar" style={{ background: u.disabled ? "var(--text-3)" : undefined }}>{(u.name || u.email).charAt(0).toUpperCase()}</span>
+                      <span style={{ opacity: u.disabled ? 0.45 : 1, display: "inline-flex" }}><Avatar src={u.avatar} name={u.name || u.email} /></span>
                       <div>
                         <div style={{ fontWeight: 500 }}>{u.name || u.email}{u.id === me?.id && <span className="chip" style={{ marginLeft: 8 }}>you</span>}</div>
-                        <div className="small faint">{u.email}</div>
+                        <div className="small faint">{u.title ? `${u.title} · ` : ""}{u.email}</div>
                       </div>
                     </div>
                   </td>

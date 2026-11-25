@@ -12,9 +12,75 @@ function b64ToBytes(s: string) {
 }
 
 export function ContainerTerminal({ serverId, containerId }: { serverId: string; containerId: string }) {
-  const box = useRef<HTMLDivElement>(null);
   const [shell, setShell] = useState("auto");
   const [user, setUser] = useState("");
+  return (
+    <ExecTerminal
+      serverId={serverId}
+      deps={[containerId, shell, user]}
+      request={(cols, rows) => ({ kind: "container_exec", id: containerId, cmd: shell === "auto" ? undefined : [shell], user: user || undefined, cols, rows })}
+      where="the container"
+      controls={
+        <>
+          <ShellSelect value={shell} onChange={setShell} />
+          <input className="input" style={{ height: 36, width: 160 }} placeholder="User (default)" value={user} onChange={(e) => setUser(e.target.value.trim())} aria-label="Run as user" />
+        </>
+      }
+    />
+  );
+}
+
+/** Shell in a Kubernetes pod container. */
+export function PodTerminal({ serverId, namespace, pod, containers }: { serverId: string; namespace: string; pod: string; containers: string[] }) {
+  const [shell, setShell] = useState("auto");
+  const [container, setContainer] = useState(containers[0] ?? "");
+  return (
+    <ExecTerminal
+      serverId={serverId}
+      deps={[namespace, pod, container, shell]}
+      request={(cols, rows) => ({ kind: "k8s_pod_exec", namespace, name: pod, container: container || undefined, cmd: shell === "auto" ? undefined : [shell], cols, rows })}
+      where="the pod"
+      controls={
+        <>
+          {containers.length > 1 && (
+            <select className="select" style={{ height: 36, width: 180 }} value={container} onChange={(e) => setContainer(e.target.value)} aria-label="Container">
+              {containers.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
+          <ShellSelect value={shell} onChange={setShell} />
+        </>
+      }
+    />
+  );
+}
+
+function ShellSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select className="select" style={{ height: 36, width: 160 }} value={value} onChange={(e) => onChange(e.target.value)} aria-label="Shell">
+      <option value="auto">Auto (bash → sh)</option>
+      <option value="/bin/bash">/bin/bash</option>
+      <option value="/bin/sh">/bin/sh</option>
+      <option value="/bin/ash">/bin/ash</option>
+    </select>
+  );
+}
+
+function ExecTerminal({
+  serverId,
+  request,
+  deps,
+  controls,
+  where,
+}: {
+  serverId: string;
+  request: (cols: number, rows: number) => Record<string, unknown>;
+  deps: unknown[];
+  controls: React.ReactNode;
+  where: string;
+}) {
+  const box = useRef<HTMLDivElement>(null);
   const [session, setSession] = useState(0);
   const [state, setState] = useState<"connecting" | "open" | "closed">("connecting");
   const [msg, setMsg] = useState<string | null>(null);
@@ -40,10 +106,9 @@ export function ContainerTerminal({ serverId, containerId }: { serverId: string;
     }
     setState("connecting");
     setMsg(null);
-    const cmd = shell === "auto" ? undefined : [shell];
     const conn: StreamConn = openStream(
       serverId,
-      { kind: "container_exec", id: containerId, cmd, user: user || undefined, cols: term.cols, rows: term.rows },
+      request(term.cols, term.rows),
       {
         onOpen: () => {
           setState("open");
@@ -73,20 +138,15 @@ export function ContainerTerminal({ serverId, containerId }: { serverId: string;
       conn.close();
       term.dispose();
     };
-  }, [serverId, containerId, session, shell, user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, session, ...deps]);
 
   return (
     <div>
       <div className="term-bar">
-        <select className="select" style={{ height: 36, width: 160 }} value={shell} onChange={(e) => setShell(e.target.value)} aria-label="Shell">
-          <option value="auto">Auto (bash → sh)</option>
-          <option value="/bin/bash">/bin/bash</option>
-          <option value="/bin/sh">/bin/sh</option>
-          <option value="/bin/ash">/bin/ash</option>
-        </select>
-        <input className="input" style={{ height: 36, width: 160 }} placeholder="User (default)" value={user} onChange={(e) => setUser(e.target.value.trim())} aria-label="Run as user" />
+        {controls}
         <span className="small muted">
-          {state === "open" ? "Connected — commands run inside the container and are audited." : state === "connecting" ? "Connecting…" : msg ? `Closed: ${msg}` : "Session closed"}
+          {state === "open" ? `Connected — commands run inside ${where} and are audited.` : state === "connecting" ? "Connecting…" : msg ? `Closed: ${msg}` : "Session closed"}
         </span>
         <span className="spacer" />
         <button className="btn sm tonal" onClick={() => setSession((s) => s + 1)}>

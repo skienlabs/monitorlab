@@ -299,13 +299,18 @@ async fn browser_stream(state: S, user: AuthUser, row: AgentRow, conn: Arc<Agent
         let _ = socket.close().await;
         return;
     }
-    let is_exec = matches!(req, StreamRequest::ContainerExec { .. });
-    if is_exec {
-        let target = match &req {
-            StreamRequest::ContainerExec { id, cmd, .. } => Some(format!("{id} {}", cmd.as_ref().map(|c| c.join(" ")).unwrap_or_default())),
-            _ => None,
-        };
-        audit(&state, Some(&user), "", AuditEntry { action: "container_exec", server: Some((&row.id, &row.name)), target, detail: None, ok: true }).await;
+    // Interactive sessions: keystrokes are forwarded, and every session is audited.
+    let exec_audit = match &req {
+        StreamRequest::ContainerExec { id, cmd, .. } => Some(("container_exec", format!("{id} {}", cmd.as_ref().map(|c| c.join(" ")).unwrap_or_default()))),
+        StreamRequest::K8sPodExec { namespace, name, container, cmd, .. } => Some((
+            "pod_exec",
+            format!("{namespace}/{name}{} {}", container.as_ref().map(|c| format!(" [{c}]")).unwrap_or_default(), cmd.as_ref().map(|c| c.join(" ")).unwrap_or_default()),
+        )),
+        _ => None,
+    };
+    let is_exec = exec_audit.is_some();
+    if let Some((action, target)) = exec_audit {
+        audit(&state, Some(&user), "", AuditEntry { action, server: Some((&row.id, &row.name)), target: Some(target.trim().to_string()), detail: None, ok: true }).await;
     }
     let mut h = match conn.open_stream(req).await {
         Ok(h) => h,
@@ -518,7 +523,7 @@ pub async fn list_users(State(state): State<S>, user: AuthUser) -> ApiResult<Jso
         .run(|c| {
             let mut stmt = c.prepare(
                 "SELECT u.id, u.email, u.name, u.role_id, r.name, u.server_scope, u.disabled, u.must_change_password, u.created_at, u.last_login_at, \
-                 (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > ?1) \
+                 (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > ?1), u.avatar_version, u.title \
                  FROM users u JOIN roles r ON r.id = u.role_id ORDER BY u.email",
             )?;
             let rows = stmt
@@ -536,6 +541,8 @@ pub async fn list_users(State(state): State<S>, user: AuthUser) -> ApiResult<Jso
                         "created_at": r.get::<_, i64>(8)?,
                         "last_login_at": r.get::<_, Option<i64>>(9)?,
                         "sessions": r.get::<_, i64>(10)?,
+                        "avatar": crate::auth::avatar_url(r.get::<_, i64>(0)?, r.get::<_, i64>(11)?),
+                        "title": r.get::<_, String>(12)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

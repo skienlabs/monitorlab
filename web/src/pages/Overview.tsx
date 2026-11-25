@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Box, CircleCheck, CloudOff, Database, Globe, Plus, Server as ServerIcon, ServerCog, ServerOff, TriangleAlert } from "lucide-react";
+import { Box, Boxes, CircleCheck, CloudOff, Database, Globe, Plus, Server as ServerIcon, ServerCog, ServerOff, TriangleAlert } from "lucide-react";
 import { useServers } from "../servers";
 import { useAuth } from "../auth";
 import { ErrorBanner, Loading, Meter, SearchBox, Seg, StatusChip } from "../components/ui";
@@ -66,6 +66,11 @@ function ServerCard({ s }: { s: Server }) {
           {caps?.docker && (
             <span className="chip outline">
               <Box size={13} /> {m?.docker ? `${m.docker.running}/${m.docker.total}` : "Docker"}
+            </span>
+          )}
+          {caps?.kubernetes && (
+            <span className={`chip ${m?.k8s && (m.k8s.pods_failing > 0 || m.k8s.nodes_ready < m.k8s.nodes) ? "crit" : "outline"}`} title="Kubernetes pods running / total">
+              <Boxes size={13} /> {m?.k8s ? `${m.k8s.pods_running}/${m.k8s.pods} pods` : "Kubernetes"}
             </span>
           )}
           {caps?.iis && (

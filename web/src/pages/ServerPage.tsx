@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { Box, ChevronRight, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
+import { Box, Boxes, ChevronRight, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Metrics, Server } from "../types";
@@ -11,6 +11,7 @@ import { bytes, dateTime, duration, pct, rate, ratio } from "../format";
 import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from "./DockerTabs";
 import { MssqlTab } from "./MssqlTab";
 import { IisTab } from "./IisTab";
+import { KubernetesTab } from "./K8sTab";
 import { Alert, AlertsTable } from "./AlertsPage";
 
 type Range = "15m" | "1h" | "6h" | "24h" | "7d" | "30d";
@@ -368,6 +369,7 @@ export function ServerPage() {
       { key: "volumes", label: "Volumes", icon: <HardDrive size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "networks", label: "Networks", icon: <Network size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "cleanup", label: "Storage & cleanup", icon: <Sparkles size={17} />, show: !!caps?.docker && can("docker.view") },
+      { key: "k8s", label: "Kubernetes", icon: <Boxes size={17} />, show: !!caps?.kubernetes && can("k8s.view") },
       { key: "mssql", label: "SQL Server", icon: <Database size={17} />, show: !!caps?.mssql && can("mssql.view") },
       { key: "iis", label: "IIS", icon: <Globe size={17} />, show: !!caps?.iis && can("iis.view") },
     ];
@@ -399,6 +401,7 @@ export function ServerPage() {
               <div className="sub small">
                 {s.hello ? `${s.hello.hostname} · ${s.hello.os_name}` : "No agent data yet"}
                 {m?.docker && ` · ${m.docker.running} of ${m.docker.total} containers running`}
+                {m?.k8s && ` · ${m.k8s.pods_running}/${m.k8s.pods} pods running`}
               </div>
             </div>
             <StatusChip status={s.status} />
@@ -437,6 +440,7 @@ export function ServerPage() {
       {tab === "cleanup" && <CleanupTab s={s} />}
       {tab === "mssql" && <MssqlTab s={s} />}
       {tab === "iis" && <IisTab s={s} />}
+      {tab === "k8s" && <KubernetesTab s={s} />}
     </div>
   );
 }

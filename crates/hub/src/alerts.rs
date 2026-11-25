@@ -39,6 +39,13 @@ pub struct AlertRules {
     pub containers_unhealthy: bool,
     pub mssql_stopped: bool,
     pub iis_stopped: bool,
+    /// Kubernetes: node not ready (critical), failing pods / degraded workloads (warning).
+    #[serde(default = "yes")]
+    pub k8s_problems: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for AlertRules {
@@ -52,6 +59,7 @@ impl Default for AlertRules {
             containers_unhealthy: true,
             mssql_stopped: true,
             iis_stopped: true,
+            k8s_problems: true,
         }
     }
 }
@@ -166,6 +174,20 @@ pub fn evaluate(m: &MetricsSample, r: &AlertRules, sustained_cpu: Option<f64>, s
                 if i.state == "stopped" {
                     out.push((format!("mssql:{}", i.name), Severity::Critical, format!("SQL Server instance {} is stopped", i.name)));
                 }
+            }
+        }
+    }
+    if r.k8s_problems {
+        if let Some(k) = &m.k8s {
+            if !k.not_ready_nodes.is_empty() {
+                out.push(("k8s:nodes".into(), Severity::Critical, format!("Kubernetes node(s) not ready: {}", k.not_ready_nodes.join(", "))));
+            }
+            if k.pods_failing > 0 {
+                let more = if k.pods_failing as usize > k.failing.len() { format!(" and {} more", k.pods_failing as usize - k.failing.len()) } else { String::new() };
+                out.push(("k8s:pods".into(), Severity::Warning, format!("{} Kubernetes pod(s) failing: {}{more}", k.pods_failing, k.failing.join("; "))));
+            }
+            if k.workloads_degraded > 0 {
+                out.push(("k8s:workloads".into(), Severity::Warning, format!("{} Kubernetes workload(s) have fewer ready replicas than desired", k.workloads_degraded)));
             }
         }
     }

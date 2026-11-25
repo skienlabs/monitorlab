@@ -29,6 +29,8 @@ pub struct AgentConfig {
     pub mssql: MssqlConfig,
     #[serde(default)]
     pub iis: IisConfig,
+    #[serde(default)]
+    pub kubernetes: K8sConfig,
     /// Set when running inside a container with the host's `/` mounted here.
     #[serde(default)]
     pub host_root: Option<String>,
@@ -80,6 +82,17 @@ fn d_host() -> String {
 }
 fn d_port() -> u16 {
     1433
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct K8sConfig {
+    /// `None` = auto-detect (k3s kubeconfig, `KUBECONFIG`, in-cluster service account).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Path of a kubeconfig file. The agent only needs read access plus the rights for the
+    /// actions you use (restart, scale, delete pods, exec).
+    #[serde(default)]
+    pub kubeconfig: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

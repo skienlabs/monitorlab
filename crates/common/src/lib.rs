@@ -78,6 +78,11 @@ pub struct Capabilities {
     pub docker_version: Option<String>,
     pub mssql: bool,
     pub iis: bool,
+    /// Kubernetes API reachable (k3s/k8s on this server).
+    #[serde(default)]
+    pub kubernetes: bool,
+    #[serde(default)]
+    pub kubernetes_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +141,8 @@ pub struct MetricsSample {
     pub mssql: Option<MssqlSummary>,
     #[serde(default)]
     pub iis: Option<IisSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k8s: Option<K8sSummary>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -175,6 +182,25 @@ pub struct MssqlInstanceSummary {
     pub mem: u64,
 }
 
+/// Cluster health in each metrics sample (refreshed about every 30 s).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct K8sSummary {
+    pub nodes: u32,
+    pub nodes_ready: u32,
+    pub pods: u32,
+    pub pods_running: u32,
+    /// CrashLoopBackOff, ImagePullBackOff, Failed, or Pending for more than 5 minutes.
+    pub pods_failing: u32,
+    pub workloads: u32,
+    /// Deployments / StatefulSets / DaemonSets with fewer ready replicas than desired.
+    pub workloads_degraded: u32,
+    #[serde(default)]
+    pub not_ready_nodes: Vec<String>,
+    /// `namespace/name: reason`, at most 10.
+    #[serde(default)]
+    pub failing: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IisSummary {
     pub sites_total: u32,
@@ -198,6 +224,18 @@ pub enum ContainerAction {
     Pause,
     Unpause,
     Kill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum K8sKind {
+    Pod,
+    Deployment,
+    StatefulSet,
+    DaemonSet,
+    Service,
+    Node,
+    Namespace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +289,43 @@ pub enum Request {
         #[serde(default)]
         volumes: bool,
     },
+    DockerContainerRename { id: String, name: String },
+    /// Re-create a container with the same settings (optionally pulling its image first),
+    /// like Portainer's "Recreate" / compose's "up" after a pull.
+    DockerContainerRecreate {
+        id: String,
+        #[serde(default)]
+        pull: bool,
+    },
+    K8sOverview,
+    K8sNamespaces,
+    K8sPods {
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    K8sWorkloads {
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    K8sServices {
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    K8sEvents {
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    /// One object as JSON (managedFields removed), for the details view.
+    K8sGet { kind: K8sKind, namespace: Option<String>, name: String },
+    K8sPodDelete {
+        namespace: String,
+        name: String,
+        #[serde(default)]
+        force: bool,
+    },
+    K8sRolloutRestart { kind: K8sKind, namespace: String, name: String },
+    K8sScale { kind: K8sKind, namespace: String, name: String, replicas: u32 },
+    K8sNodeCordon { name: String, unschedulable: bool },
     DockerImages,
     DockerImageRemove {
         id: String,
@@ -295,6 +370,19 @@ impl Request {
             Request::DockerInspect { .. } => "docker_inspect",
             Request::DockerContainerAction { .. } => "docker_container_action",
             Request::DockerContainerRemove { .. } => "docker_container_remove",
+            Request::DockerContainerRename { .. } => "docker_container_rename",
+            Request::DockerContainerRecreate { .. } => "docker_container_recreate",
+            Request::K8sOverview => "k8s_overview",
+            Request::K8sNamespaces => "k8s_namespaces",
+            Request::K8sPods { .. } => "k8s_pods",
+            Request::K8sWorkloads { .. } => "k8s_workloads",
+            Request::K8sServices { .. } => "k8s_services",
+            Request::K8sEvents { .. } => "k8s_events",
+            Request::K8sGet { .. } => "k8s_get",
+            Request::K8sPodDelete { .. } => "k8s_pod_delete",
+            Request::K8sRolloutRestart { .. } => "k8s_rollout_restart",
+            Request::K8sScale { .. } => "k8s_scale",
+            Request::K8sNodeCordon { .. } => "k8s_node_cordon",
             Request::DockerImages => "docker_images",
             Request::DockerImageRemove { .. } => "docker_image_remove",
             Request::DockerVolumes => "docker_volumes",
@@ -363,6 +451,34 @@ pub enum StreamRequest {
     ContainerStats { id: String },
     /// Live CPU / memory of every running container, one batch every ~2 s.
     ContainerStatsAll {},
+    K8sPodLogs {
+        namespace: String,
+        name: String,
+        #[serde(default)]
+        container: Option<String>,
+        #[serde(default = "default_tail")]
+        tail: u32,
+        /// Unix seconds; when set, replaces `tail` (used to resume after a reconnect).
+        #[serde(default)]
+        since: Option<i64>,
+        #[serde(default = "default_true")]
+        follow: bool,
+        /// Logs of the previous (crashed) container instance.
+        #[serde(default)]
+        previous: bool,
+    },
+    K8sPodExec {
+        namespace: String,
+        name: String,
+        #[serde(default)]
+        container: Option<String>,
+        #[serde(default)]
+        cmd: Option<Vec<String>>,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+    },
     SystemLive {
         #[serde(default = "default_live_ms")]
         interval_ms: u32,
@@ -387,6 +503,8 @@ impl StreamRequest {
             StreamRequest::ContainerExec { .. } => "container_exec",
             StreamRequest::ContainerStats { .. } => "container_stats",
             StreamRequest::ContainerStatsAll { .. } => "container_stats_all",
+            StreamRequest::K8sPodLogs { .. } => "k8s_pod_logs",
+            StreamRequest::K8sPodExec { .. } => "k8s_pod_exec",
             StreamRequest::SystemLive { .. } => "system_live",
             StreamRequest::IisLogFollow { .. } => "iis_log_follow",
             StreamRequest::MssqlLogFollow { .. } => "mssql_log_follow",

@@ -437,3 +437,23 @@ export function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void]
   );
   return [v, set];
 }
+
+// ------------------------------------------------------------------ avatar
+
+const AVATAR_COLORS = ["#4f46e5", "#9333ea", "#db2777", "#ea7a0c", "#0d9488", "#2563eb", "#16a34a", "#c026d3"];
+
+/** Profile photo, or a colored circle with the first letter of the name. */
+export function Avatar({ src, name, size = 32 }: { src?: string | null; name: string; size?: number }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [src]);
+  const label = (name || "?").trim();
+  let h = 0;
+  for (const ch of label) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const style = { width: size, height: size, fontSize: Math.round(size * 0.42) };
+  if (src && !broken) return <img className="avatar avatar-img" src={src} alt="" style={style} onError={() => setBroken(true)} />;
+  return (
+    <span className="avatar" style={{ ...style, background: AVATAR_COLORS[h % AVATAR_COLORS.length] }} aria-hidden>
+      {label.charAt(0).toUpperCase()}
+    </span>
+  );
+}

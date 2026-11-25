@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod db;
 mod metrics;
+mod profile;
 mod rbac;
 mod registry;
 mod state;
@@ -20,7 +21,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use clap::Parser;
 use rusqlite::{params, OptionalExtension};
@@ -103,6 +104,12 @@ fn router(state: S) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/password", post(auth::change_password))
+        .route("/auth/profile", put(profile::update_profile))
+        .route("/auth/avatar", put(profile::put_avatar).delete(profile::delete_avatar))
+        .route("/auth/sessions", get(profile::list_sessions))
+        .route("/auth/sessions/revoke-others", post(profile::revoke_other_sessions))
+        .route("/auth/sessions/{key}", delete(profile::revoke_session))
+        .route("/users/{id}/avatar", get(profile::get_avatar))
         .route("/servers", get(api::list_servers).post(api::create_server))
         .route("/servers/{id}", get(api::get_server).patch(api::rename_server).delete(api::delete_server))
         .route("/servers/{id}/metrics", get(api::server_metrics))
@@ -153,6 +160,28 @@ async fn bootstrap(db: &Db, cfg: &HubConfig) -> Result<()> {
                     params![name, desc, serde_json::to_string(&perms)?],
                 )?;
             }
+        }
+        // New permissions for the other built-in roles, once per upgrade.
+        let mut done_flags = std::collections::HashSet::new();
+        for (flag, role, add) in rbac::role_upgrades() {
+            let applied: Option<String> = c.query_row("SELECT value FROM settings WHERE key = ?1", [flag], |r| r.get(0)).optional()?;
+            if applied.is_some() {
+                continue;
+            }
+            let cur: Option<String> = c.query_row("SELECT permissions FROM roles WHERE name = ?1 AND builtin = 1", [role], |r| r.get(0)).optional()?;
+            if let Some(cur) = cur {
+                let mut perms: Vec<String> = serde_json::from_str(&cur).unwrap_or_default();
+                for p in add {
+                    if !perms.iter().any(|x| x == p) {
+                        perms.push(p.to_string());
+                    }
+                }
+                c.execute("UPDATE roles SET permissions = ?1 WHERE name = ?2 AND builtin = 1", params![serde_json::to_string(&perms)?, role])?;
+            }
+            done_flags.insert(flag);
+        }
+        for flag in done_flags {
+            c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?1, '1')", [flag])?;
         }
         // Administrator always has every permission (including ones added in upgrades).
         c.execute("UPDATE roles SET permissions = ?1 WHERE name = 'Administrator' AND builtin = 1", [full])?;

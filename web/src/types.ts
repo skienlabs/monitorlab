@@ -7,6 +7,9 @@ export interface Me {
   permissions: string[];
   server_scope: string[] | null;
   must_change_password: boolean;
+  title?: string;
+  phone?: string;
+  avatar?: string | null;
 }
 
 export interface Disk {
@@ -36,6 +39,7 @@ export interface Metrics {
   process_count: number;
   docker: { running: number; paused: number; stopped: number; total: number; images: number; unhealthy: number } | null;
   mssql: { instances: { name: string; state: string; cpu: number; mem: number }[] } | null;
+  k8s?: { nodes: number; nodes_ready: number; pods: number; pods_running: number; pods_failing: number; workloads: number; workloads_degraded: number; not_ready_nodes: string[]; failing: string[] } | null;
   iis: { sites_total: number; sites_started: number; pools_total: number; pools_started: number; worker_cpu: number; worker_mem: number } | null;
 }
 
@@ -53,7 +57,7 @@ export interface Hello {
   total_memory: number;
   boot_time: number;
   ips: string[];
-  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean };
+  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean; kubernetes?: boolean; kubernetes_version?: string | null };
   interval_secs: number;
 }
 

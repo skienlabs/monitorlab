@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::bail;
 use anyhow::{Context, Result};
 
-use crate::config::{default_config_path, AgentConfig, DockerConfig, IisConfig, MssqlConfig};
+use crate::config::{default_config_path, AgentConfig, DockerConfig, IisConfig, K8sConfig, MssqlConfig};
 
 pub struct InstallArgs {
     pub hub: String,
@@ -30,6 +30,7 @@ pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
         docker: DockerConfig::default(),
         mssql: MssqlConfig::default(),
         iis: IisConfig::default(),
+        kubernetes: K8sConfig::default(),
         host_root: None,
     };
     cfg.save(&path).with_context(|| format!("writing {}", path.display()))?;
@@ -45,6 +46,8 @@ const UNIT_PATH: &str = "/etc/systemd/system/monitorlab-agent.service";
 const BIN_PATH: &str = "/usr/local/bin/monitorlab-agent";
 #[cfg(unix)]
 const SERVICE_USER: &str = "monitorlab";
+#[cfg(target_os = "linux")]
+const K3S_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
 
 #[cfg(unix)]
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
@@ -98,6 +101,23 @@ pub async fn install(args: InstallArgs) -> Result<()> {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750))?;
     }
 
+    // k3s: its kubeconfig is root-only, so give the agent its own copy.
+    #[cfg(target_os = "linux")]
+    if Path::new(K3S_KUBECONFIG).exists() {
+        if let Some(dir) = cfg_path.parent() {
+            let dest = dir.join("kubeconfig");
+            std::fs::copy(K3S_KUBECONFIG, &dest).context("copying the k3s kubeconfig")?;
+            std::os::unix::fs::chown(&dest, Some(uid), Some(gid))?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600))?;
+            let mut cfg = AgentConfig::load(&cfg_path)?;
+            cfg.kubernetes.kubeconfig = Some(dest.display().to_string());
+            cfg.save(&cfg_path)?;
+            std::os::unix::fs::chown(&cfg_path, Some(uid), Some(gid))?;
+            println!("k3s detected: Kubernetes monitoring enabled (kubeconfig copied to {}).", dest.display());
+        }
+    }
+
     let supplementary = if groups.is_empty() { String::new() } else { format!("SupplementaryGroups={}\n", groups.join(" ")) };
     let unit = format!(
         "[Unit]\n\
@@ -146,6 +166,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
         let cfg = default_config_path();
         let _ = std::fs::remove_file(&cfg);
         if let Some(dir) = cfg.parent() {
+            let _ = std::fs::remove_file(dir.join("kubeconfig"));
             let _ = std::fs::remove_dir(dir); // only succeeds when empty
         }
         match run("userdel", &[SERVICE_USER]) {
