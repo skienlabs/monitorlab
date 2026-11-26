@@ -253,7 +253,7 @@ export function UptimePage() {
           <Sorted rows={data} acc={{ name: m => m.name, state: m => m.state, ms: m => m.last_ms, d1: m => m.uptime_24h, d30: m => m.uptime_30d }}>{(S) => (
 <table className="table">
             <thead>
-              <tr>{S.th("name", "Monitor")}{S.th("state", "Status")}<th>Last 60 checks</th>{S.th("ms", "Response", "num")}{S.th("d1", "24 h", "num")}{S.th("d30", "30 days", "num")}<th>SSL</th><th /></tr>
+              <tr>{S.th("name", "Monitor")}{S.th("state", "Status")}<th style={{ width: 212 }}>Last 60 checks</th>{S.th("ms", "Response", "num")}{S.th("d1", "24 h", "num")}{S.th("d30", "30 days", "num")}<th>SSL</th><th /></tr>
             </thead>
             <tbody>
               {S.rows.map((m) => (

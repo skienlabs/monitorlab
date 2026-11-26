@@ -624,8 +624,8 @@ tr.selected > td { background: color-mix(in srgb, var(--primary) 8%, transparent
 .logs-view .ln .src { flex: none; width: 150px; padding-right: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 @media (max-width: 640px) { .logs-view .ln .src { width: 90px; } }
 /* uptime beat strip */
-.beats { display: flex; align-items: flex-end; gap: 2px; height: 26px; min-width: 180px; }
-.beats i { flex: 1; min-width: 2px; border-radius: 2px; background: var(--good); opacity: 0.85; }
+.beats { display: flex; align-items: flex-end; gap: 2px; height: 26px; width: 200px; max-width: 200px; overflow: hidden; }
+.beats i { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--good); opacity: 0.85; }
 .beats i.bad { background: var(--crit); opacity: 1; }
 .beats i.empty { background: var(--surface-3); height: 30%; }
 .banner.good { background: var(--good-soft); color: var(--good-text); }
@@ -635,3 +635,6 @@ tr.selected > td { background: color-mix(in srgb, var(--primary) 8%, transparent
 .table th.sortable { white-space: nowrap; }
 .table th.sortable:focus-visible { outline: 2px solid var(--accent, #0b57d0); outline-offset: -2px; }
 .sort-ind { display: inline-block; width: 12px; margin-left: 4px; font-size: 9px; vertical-align: 1px; color: var(--accent, #0b57d0); }
+
+/* uptime table: keep the checks strip a fixed width so every column fits without scrolling */
+.table td:has(> .beats) { width: 212px; }
