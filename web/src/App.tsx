@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { Activity, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, UserRound, Users } from "lucide-react";
+import { Activity, Download, Globe2, Bell, BellRing, KeyRound, Menu as MenuIcon, SlidersHorizontal, LayoutGrid, LogOut, Monitor, Moon, ScrollText, Server as ServerIcon, ShieldCheck, Sun, UserRound, Users } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth";
 import { BrandFooter, BrandProvider, useBrand } from "./brand";
 import { GeneralSettings } from "./pages/GeneralSettings";
@@ -17,6 +17,9 @@ import { AdminRoles } from "./pages/AdminRoles";
 import { AuditPage } from "./pages/AuditPage";
 import { AccountPage } from "./pages/AccountPage";
 import { PodPage } from "./pages/PodPage";
+import { NodePage } from "./pages/NodePage";
+import { StackPage } from "./pages/Stacks";
+import { MonitorPage, UptimePage } from "./pages/Uptime";
 import { AlertsPage } from "./pages/AlertsPage";
 import { AlertSettings } from "./pages/AlertSettings";
 import { useAlertCount } from "./servers";
@@ -30,6 +33,63 @@ function ThemeToggle() {
     <button className="icon-btn" onClick={() => setMode(next)} title={label} aria-label={label}>
       <Icon size={20} />
     </button>
+  );
+}
+
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: string }>;
+}
+
+/** "Install app": native prompt where the browser offers one, step-by-step hint otherwise (Safari / iOS). */
+function InstallApp() {
+  const [evt, setEvt] = useState<InstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(
+    window.matchMedia("(display-mode: standalone)").matches || (navigator as unknown as { standalone?: boolean }).standalone === true,
+  );
+  useEffect(() => {
+    const before = (e: Event) => {
+      e.preventDefault();
+      setEvt(e as InstallPromptEvent);
+    };
+    const done = () => setInstalled(true);
+    window.addEventListener("beforeinstallprompt", before);
+    window.addEventListener("appinstalled", done);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", before);
+      window.removeEventListener("appinstalled", done);
+    };
+  }, []);
+  if (installed) return null;
+  if (evt) {
+    return (
+      <button
+        className="icon-btn"
+        title="Install MonitorLab as an app"
+        aria-label="Install MonitorLab as an app"
+        onClick={() => evt.prompt().then(() => evt.userChoice).then((c) => c.outcome === "accepted" && setInstalled(true)).catch(() => {})}
+      >
+        <Download size={20} />
+      </button>
+    );
+  }
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const safariMac = !ios && /Macintosh/.test(ua) && /Safari/.test(ua) && !/Chrome|Chromium|Edg/.test(ua);
+  const tip = ios
+    ? "Tap the Share button, then “Add to Home Screen”."
+    : safariMac
+      ? "In the menu bar choose File → Add to Dock."
+      : /Firefox/.test(ua)
+        ? "Firefox on desktop cannot install web apps. Open this page in Chrome or Edge to install it."
+        : "Open the browser menu (⋮) and choose “Install app” or “Add to Home screen”. This needs the page to be opened over HTTPS.";
+  return (
+    <Menu trigger={<Download size={20} />} label="Install app">
+      <div className="menu-label" style={{ maxWidth: 260, whiteSpace: "normal" }}>
+        <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 500 }}>Install MonitorLab</div>
+        <div>{tip}</div>
+      </div>
+    </Menu>
   );
 }
 
@@ -68,6 +128,9 @@ function Nav({ open }: { open: boolean }) {
       <NavLink to="/alerts" data-accent="alert">
         <Bell size={20} /> Alerts
         {alertCount > 0 && <span className="count" style={{ color: "var(--crit-text)", fontWeight: 600 }}>{alertCount}</span>}
+      </NavLink>
+      <NavLink to="/uptime" data-accent="net">
+        <Globe2 size={20} /> Uptime
       </NavLink>
       {servers && servers.length > 0 && <div className="nav-section">Servers</div>}
       {servers?.map((s) => (
@@ -132,6 +195,7 @@ function Shell({ children }: { children: ReactNode }) {
           <span className="ellipsis">{name}</span>
         </Link>
         <div className="spacer" />
+        <InstallApp />
         <ThemeToggle />
         <UserMenu />
       </header>
@@ -173,6 +237,10 @@ function Routed() {
           <Route path="/servers/:id" element={<ServerPage />} />
           <Route path="/servers/:id/containers/:cid" element={<ContainerPage />} />
           <Route path="/servers/:id/k8s/:ns/:pod" element={<PodPage />} />
+          <Route path="/servers/:id/k8s-nodes/:node" element={<NodePage />} />
+          <Route path="/servers/:id/stacks/:project" element={<StackPage />} />
+          <Route path="/uptime" element={<UptimePage />} />
+          <Route path="/uptime/:mid" element={<MonitorPage />} />
           <Route path="/admin/servers" element={<Guard perm="servers.manage"><AdminServers /></Guard>} />
           <Route path="/admin/general" element={<Guard perm="users.manage"><GeneralSettings /></Guard>} />
           <Route path="/admin/users" element={<Guard perm="users.manage"><AdminUsers /></Guard>} />

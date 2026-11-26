@@ -94,7 +94,7 @@ pub fn head_text(path: &Path, n: u64) -> std::io::Result<String> {
 }
 
 pub fn to_loglines(lines: Vec<String>) -> Vec<LogLine> {
-    lines.into_iter().map(|text| LogLine { ts: None, s: 0, text }).collect()
+    lines.into_iter().map(|text| LogLine { ts: None, s: 0, text, ..Default::default() }).collect()
 }
 
 struct FollowState {

@@ -12,6 +12,16 @@ interface Line {
   text: string;
   lvl: Level;
   json?: any;
+  /** Container / unit the line came from (merged views). */
+  src?: string;
+}
+
+/** Stable colour per source in merged logs. */
+const SRC_COLORS = ["#2563eb", "#9333ea", "#0d9488", "#db2777", "#ea7a0c", "#16a34a", "#0891d1", "#c026d3", "#ca8a04", "#dc2626"];
+function srcColor(s: string) {
+  let h = 0;
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return SRC_COLORS[h % SRC_COLORS.length];
 }
 
 const MAX_LINES = 20_000;
@@ -173,7 +183,10 @@ export function LogViewer({ source, fileName, height = "calc(100vh - 300px)", ex
               }
             }
             if (l.ts) lastTs.current = l.ts;
-            pending.current.push({ id: nextId.current++, ts: l.ts, s: l.s, text, lvl: levelOf(text, l.s, json), json });
+            // Sources with real severities (journald priority, Event Log level) win over guessing.
+            const given = (l as any).lvl as number | undefined;
+            const lvl: Level = given == null ? levelOf(text, l.s, json) : given <= 3 ? "error" : given === 4 ? "warn" : "";
+            pending.current.push({ id: nextId.current++, ts: l.ts, s: l.s, text, lvl, json, src: (l as any).src });
           }
           scheduleFlush();
         } else if (d.k === "info") {
@@ -227,7 +240,7 @@ export function LogViewer({ source, fileName, height = "calc(100vh - 300px)", ex
       if (stream === "err" && l.s !== 2) return false;
       if (re) {
         re.lastIndex = 0;
-        if (!re.test(l.text)) return false;
+        if (!re.test(l.text) && !(l.src && re.test(l.src))) return false;
       }
       return true;
     });
@@ -353,6 +366,11 @@ export function LogViewer({ source, fileName, height = "calc(100vh - 300px)", ex
                 title={l.json ? "Click to expand JSON" : undefined}
               >
                 {showTs && <span className="ts">{fmtTs(l.ts, withDate) || " "}</span>}
+                {l.src && (
+                  <span className="src" style={{ color: srcColor(l.src) }} title={l.src}>
+                    {l.src}
+                  </span>
+                )}
                 <span className="tx" style={showTs ? undefined : { paddingLeft: 10 }}>
                   {highlight(l.text, re)}
                 </span>

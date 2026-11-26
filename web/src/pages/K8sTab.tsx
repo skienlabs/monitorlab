@@ -1,15 +1,16 @@
 import { ReactNode, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  AlertTriangle, Boxes, CircleCheck, Cpu, FileText, Layers, MoreVertical, Network, Pause, Play, RotateCcw, Scale, Server as ServerIcon,
-  SquareTerminal, Trash2, Workflow,
+  AlertTriangle, Boxes, CircleCheck, History, Play as PlayIcon, Cpu, FileText, Layers, MoreVertical, Network, Pause, Play, RotateCcw, Scale, Server as ServerIcon,
+  SquareTerminal, Trash2, Workflow, Lock, HardDrive as HardDriveIcon,
 } from "lucide-react";
 import { rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Server } from "../types";
-import { Dialog, Empty, ErrorBanner, Loading, Menu, Meter, SearchBox, Seg, Spinner, useConfirm, useLocalStorage, usePoll, useToast } from "../components/ui";
+import { Dialog, Empty, ErrorBanner, Loading, Menu, Meter, SearchBox, Seg, Spinner, useConfirm, useLocalStorage, usePoll, useToast, Sorted } from "../components/ui";
 import { ago, bytes, plural } from "../format";
 import { Toolbar } from "./DockerTabs";
+import { UsageHistory } from "../components/UsageHistory";
 
 // ------------------------------------------------------------------ types
 
@@ -75,6 +76,12 @@ export interface Pod {
   owner: { kind: string; name: string } | null;
   cpu: number | null;
   mem: number | null;
+  cpu_req?: number;
+  cpu_lim?: number;
+  mem_req?: number;
+  mem_lim?: number;
+  workload?: string;
+  oom_killed?: boolean;
 }
 
 interface Workload {
@@ -127,11 +134,12 @@ export const podPath = (serverId: string, ns: string, name: string, tab?: string
 
 // ------------------------------------------------------------------ tab
 
-type Sub = "overview" | "workloads" | "pods" | "services" | "events";
+type Sub = "overview" | "namespaces" | "workloads" | "pods" | "jobs" | "network" | "storage" | "config" | "events";
+const SUBS: Sub[] = ["overview", "namespaces", "workloads", "pods", "jobs", "network", "storage", "config", "events"];
 
 export function KubernetesTab({ s }: { s: Server }) {
   const [params, setParams] = useSearchParams();
-  const sub = (["overview", "workloads", "pods", "services", "events"].includes(params.get("k") ?? "") ? params.get("k") : "overview") as Sub;
+  const sub = (SUBS.includes((params.get("k") ?? "") as Sub) ? params.get("k") : params.get("k") === "services" ? "network" : "overview") as Sub;
   const [ns, setNs] = useLocalStorage<string>(`monitorlab.k8s.ns.${s.id}`, "");
   const nss = usePoll(() => rpc<string[]>(s.id, { op: "k8s_namespaces" }), [s.id], 60_000);
   const setSub = (k: Sub) => {
@@ -151,14 +159,18 @@ export function KubernetesTab({ s }: { s: Server }) {
           onChange={setSub}
           options={[
             { value: "overview", label: "Cluster" },
+            { value: "namespaces", label: "Namespaces" },
             { value: "workloads", label: "Workloads" },
             { value: "pods", label: "Pods" },
-            { value: "services", label: "Services" },
+            { value: "jobs", label: "Jobs" },
+            { value: "network", label: "Network" },
+            { value: "storage", label: "Storage" },
+            { value: "config", label: "Config" },
             { value: "events", label: "Events" },
           ]}
         />
         <span className="spacer" />
-        {sub !== "overview" && (
+        {sub !== "overview" && sub !== "namespaces" && (
           <select className="select" style={{ height: 36, minWidth: 180, width: "auto" }} value={ns} onChange={(e) => setNs(e.target.value)} aria-label="Namespace">
             <option value="">All namespaces</option>
             {(nss.data ?? []).map((n) => (
@@ -170,7 +182,16 @@ export function KubernetesTab({ s }: { s: Server }) {
       {sub === "overview" && <ClusterOverview s={s} onPods={() => setSub("pods")} />}
       {sub === "workloads" && <Workloads s={s} ns={ns} />}
       {sub === "pods" && <Pods s={s} ns={ns} />}
-      {sub === "services" && <Services s={s} ns={ns} />}
+      {sub === "network" && (
+        <div className="col" style={{ gap: 16 }}>
+          <Ingresses s={s} ns={ns} />
+          <Services s={s} ns={ns} />
+        </div>
+      )}
+      {sub === "namespaces" && <Namespaces s={s} onOpen={(n) => { setNs(n); setSub("pods"); }} />}
+      {sub === "jobs" && <Jobs s={s} ns={ns} />}
+      {sub === "storage" && <Storage s={s} ns={ns} />}
+      {sub === "config" && <ConfigRes s={s} ns={ns} />}
       {sub === "events" && <Events s={s} ns={ns} />}
     </div>
   );
@@ -250,7 +271,7 @@ function ClusterOverview({ s, onPods }: { s: Server; onPods: () => void }) {
               <div className="row" style={{ marginBottom: 12 }}>
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="row wrap" style={{ gap: 8 }}>
-                    <b className="mono">{n.name}</b>
+                    <Link className="mono" style={{ fontWeight: 700 }} to={`/servers/${s.id}/k8s-nodes/${encodeURIComponent(n.name)}`}>{n.name}</Link>
                     <span className={`chip ${n.ready ? "good" : "crit"}`}>{n.ready ? "Ready" : "Not ready"}</span>
                     {n.unschedulable && <span className="chip warn">Cordoned</span>}
                     {n.roles.map((r) => <span key={r} className="chip outline">{r}</span>)}
@@ -297,6 +318,7 @@ function Workloads({ s, ns }: { s: Server; ns: string }) {
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const [scaling, setScaling] = useState<Workload | null>(null);
+  const [hist, setHist] = useState<Workload | null>(null);
   const { data, error, loading, reload } = usePoll(() => rpc<Workload[]>(s.id, { op: "k8s_workloads", namespace: ns || undefined }), [s.id, ns], 10_000);
   const list = useMemo(() => {
     const n = q.trim().toLowerCase();
@@ -323,20 +345,21 @@ function Workloads({ s, ns }: { s: Server; ns: string }) {
         {list.length === 0 ? (
           <Empty icon={<Workflow size={26} />} title="No workloads" />
         ) : (
-          <table className="table">
+          <Sorted rows={list} acc={{ name: w => w.name, kind: w => w.kind, ready: w => w.desired ? w.ready / w.desired : 1, updated: w => w.updated, images: w => w.images[0], created: w => w.created }}>{(S) => (
+<table className="table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Kind</th>
-                <th>Ready</th>
-                <th className="num">Up to date</th>
-                <th>Images</th>
-                <th>Age</th>
+                {S.th("name", "Name")}
+                {S.th("kind", "Kind")}
+                {S.th("ready", "Ready")}
+                {S.th("updated", "Up to date", "num")}
+                {S.th("images", "Images")}
+                {S.th("created", "Age")}
                 <th />
               </tr>
             </thead>
             <tbody>
-              {list.map((w) => (
+              {S.rows.map((w) => (
                 <tr key={`${w.kind}/${w.namespace}/${w.name}`} style={{ cursor: "pointer" }} onClick={() => nav(`?tab=k8s&k=pods&q=${encodeURIComponent(w.name)}`)}>
                   <td>
                     <div style={{ fontWeight: 500 }}>{w.name}</div>
@@ -348,6 +371,8 @@ function Workloads({ s, ns }: { s: Server; ns: string }) {
                   <td style={{ maxWidth: 320 }}>{w.images.map((i) => <div key={i} className="small mono ellipsis" title={i}>{i}</div>)}</td>
                   <td className="small muted nowrap">{ago(w.created)}{w.restarted_at ? <div className="faint">restarted {ago(w.restarted_at)}</div> : null}</td>
                   <td className="actions" onClick={(e) => e.stopPropagation()}>
+                    <div className="row" style={{ gap: 0, justifyContent: "flex-end" }}>
+                      <button className="icon-btn sm" title="CPU / memory history" aria-label="History" onClick={() => setHist(w)}><History size={17} /></button>
                     {can("k8s.control") && (
                       <div className="row" style={{ gap: 0, justifyContent: "flex-end" }}>
                         <button className="icon-btn sm" title="Rolling restart" aria-label="Rolling restart" onClick={() => restart(w)}><RotateCcw size={17} /></button>
@@ -356,14 +381,21 @@ function Workloads({ s, ns }: { s: Server; ns: string }) {
                         )}
                       </div>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+)}</Sorted>
         )}
       </div>
       {scaling && <ScaleDialog s={s} w={scaling} onClose={() => setScaling(null)} onDone={() => { setScaling(null); reload(); }} />}
+      {hist && (
+        <Dialog title={`${hist.namespace}/${hist.name} · all pods`} onClose={() => setHist(null)} wide>
+          <UsageHistory serverId={s.id} kind="pod" group={`${hist.namespace}/${hist.name}`} />
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -475,14 +507,14 @@ function Pods({ s, ns }: { s: Server; ns: string }) {
                     <Link to={podPath(s.id, p.namespace, p.name)} className="ellipsis" style={{ display: "block", fontWeight: 500, color: "var(--text)" }} onClick={(e) => e.stopPropagation()}>{p.name}</Link>
                     <div className="small faint">{p.namespace}{p.owner ? ` · ${p.owner.kind}` : ""}</div>
                   </td>
-                  <td><PodStatus p={p} /></td>
+                  <td><PodStatus p={p} />{p.oom_killed && <span className="chip crit" style={{ marginLeft: 4 }} title="A container was killed for using more memory than its limit">OOMKilled</span>}</td>
                   <td className="tnum small">{p.ready}</td>
                   <td className="num tnum">
                     <span style={{ color: p.restarts > 0 ? "var(--warn-text)" : undefined }}>{p.restarts}</span>
                     {p.last_restart ? <div className="small faint">{ago(p.last_restart)}</div> : null}
                   </td>
-                  <td className="num tnum small">{data.metrics_available ? cores(p.cpu) : "—"}</td>
-                  <td className="num tnum small">{data.metrics_available && p.mem != null ? bytes(p.mem) : "—"}</td>
+                  <td className="num tnum small"><UsageCell used={data.metrics_available ? p.cpu : null} req={p.cpu_req} lim={p.cpu_lim} fmt={cores} /></td>
+                  <td className="num tnum small"><UsageCell used={data.metrics_available ? p.mem : null} req={p.mem_req} lim={p.mem_lim} fmt={(v) => bytes(v)} /></td>
                   <td className="small mono">{p.node}</td>
                   <td className="small muted nowrap">{ago(p.created)}</td>
                   <td className="actions" onClick={(e) => e.stopPropagation()}>
@@ -517,12 +549,13 @@ function Services({ s, ns }: { s: Server; ns: string }) {
         <SearchBox value={q} onChange={setQ} placeholder="Filter services" />
       </Toolbar>
       <div className="card table-wrap">
-        <table className="table">
+        <Sorted rows={list} acc={{ name: v => v.name, type: v => v.type, ip: v => v.cluster_ip, ext: v => v.external[0], created: v => v.created }}>{(S) => (
+<table className="table">
           <thead>
-            <tr><th>Name</th><th>Type</th><th>Cluster IP</th><th>External</th><th>Ports</th><th>Age</th></tr>
+            <tr>{S.th("name", "Name")}{S.th("type", "Type")}{S.th("ip", "Cluster IP")}{S.th("ext", "External")}<th>Ports</th>{S.th("created", "Age")}</tr>
           </thead>
           <tbody>
-            {list.map((v) => (
+            {S.rows.map((v) => (
               <tr key={`${v.namespace}/${v.name}`}>
                 <td><div style={{ fontWeight: 500 }}>{v.name}</div><div className="small faint">{v.namespace}</div></td>
                 <td><span className={`chip ${v.type === "LoadBalancer" || v.type === "NodePort" ? "info" : "outline"}`}>{v.type}</span></td>
@@ -534,6 +567,7 @@ function Services({ s, ns }: { s: Server; ns: string }) {
             ))}
           </tbody>
         </table>
+)}</Sorted>
       </div>
     </div>
   );
@@ -579,6 +613,258 @@ function Events({ s, ns }: { s: Server; ns: string }) {
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ usage vs requests / limits
+
+/** Usage with a bar against the limit (or the request when there is no limit), like Lens. */
+export function UsageCell({ used, req, lim, fmt }: { used: number | null | undefined; req?: number; lim?: number; fmt: (v: number) => string }) {
+  if (used == null) return <>—</>;
+  const ref = lim || req || 0;
+  const pct = ref ? (used / ref) * 100 : null;
+  const cls = pct == null ? "" : pct >= 90 ? "crit" : pct >= 75 ? "warn" : "";
+  return (
+    <div style={{ minWidth: 92 }} title={`request ${req ? fmt(req) : "none"} · limit ${lim ? fmt(lim) : "none"}`}>
+      <div>{fmt(used)}</div>
+      {pct != null && (
+        <>
+          <div className={`meter thin ${cls}`} style={{ marginTop: 3 }}><span style={{ width: `${Math.min(100, pct)}%` }} /></div>
+          <div className="faint" style={{ fontSize: 11 }}>{pct.toFixed(0)}% of {lim ? "limit" : "request"}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ namespaces
+
+interface NsUsage {
+  name: string;
+  phase: string;
+  pods: number;
+  running: number;
+  failing: number;
+  restarts: number;
+  cpu: number;
+  mem: number;
+  cpu_req: number;
+  cpu_lim: number;
+  mem_req: number;
+  mem_lim: number;
+}
+
+function Namespaces({ s, onOpen }: { s: Server; onOpen: (ns: string) => void }) {
+  const [hist, setHist] = useState<string | null>(null);
+  const { data, error, loading, reload } = usePoll(() => rpc<{ namespaces: NsUsage[]; metrics_available: boolean }>(s.id, { op: "k8s_namespace_usage" }), [s.id], 15_000);
+  if (error && !data) return <ErrorBanner error={error} onRetry={reload} />;
+  if (!data) return <Loading />;
+  const list = [...data.namespaces].sort((a, b) => b.cpu - a.cpu || a.name.localeCompare(b.name));
+  const total = list.reduce((a, n) => ({ cpu: a.cpu + n.cpu, mem: a.mem + n.mem }), { cpu: 0, mem: 0 });
+  return (
+    <div>
+      <Toolbar onRefresh={reload} loading={loading}>
+        <span className="small muted">Usage now: {cores(total.cpu)} CPU · {bytes(total.mem)} memory across {list.length} namespaces</span>
+      </Toolbar>
+      <div className="card table-wrap">
+        <Sorted rows={list} acc={{ name: n => n.name, pods: n => n.pods, restarts: n => n.restarts, cpu: n => n.cpu, cpu_req: n => n.cpu_req, mem: n => n.mem, mem_req: n => n.mem_req }}>{(S) => (
+<table className="table">
+          <thead>
+            <tr>{S.th("name", "Namespace")}{S.th("pods", "Pods")}{S.th("restarts", "Restarts", "num")}{S.th("cpu", "CPU", "num")}{S.th("cpu_req", "CPU requests / limits", "num")}{S.th("mem", "Memory", "num")}{S.th("mem_req", "Memory requests / limits", "num")}<th /></tr>
+          </thead>
+          <tbody>
+            {S.rows.map((n) => (
+              <tr key={n.name} style={{ cursor: "pointer" }} onClick={() => onOpen(n.name)}>
+                <td style={{ fontWeight: 600 }}>{n.name}{n.phase !== "Active" && <span className="chip warn" style={{ marginLeft: 6 }}>{n.phase}</span>}</td>
+                <td className="small">
+                  <span className={`chip ${n.failing ? "crit" : n.running === n.pods ? "good" : ""}`}>{n.running}/{n.pods} running</span>
+                  {n.failing > 0 && <span className="small" style={{ color: "var(--crit-text)", marginLeft: 6 }}>{n.failing} failing</span>}
+                </td>
+                <td className="num tnum small">{n.restarts}</td>
+                <td className="num tnum small">{data.metrics_available ? cores(n.cpu) : "—"}</td>
+                <td className="num tnum small faint">{cores(n.cpu_req)} / {n.cpu_lim ? cores(n.cpu_lim) : "—"}</td>
+                <td className="num tnum small">{data.metrics_available ? bytes(n.mem) : "—"}</td>
+                <td className="num tnum small faint">{bytes(n.mem_req)} / {n.mem_lim ? bytes(n.mem_lim) : "—"}</td>
+                <td className="actions" onClick={(e) => e.stopPropagation()}>
+                  <button className="icon-btn sm" title="CPU / memory history" aria-label="History" onClick={() => setHist(n.name)}><History size={17} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+)}</Sorted>
+      </div>
+      {hist && (
+        <Dialog title={`Namespace ${hist} · all pods`} onClose={() => setHist(null)} wide>
+          <UsageHistory serverId={s.id} kind="pod" group={`${hist}/`} />
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ jobs & cronjobs
+
+function Jobs({ s, ns }: { s: Server; ns: string }) {
+  const { can } = useAuth();
+  const confirm = useConfirm();
+  const cron = usePoll(() => rpc<any[]>(s.id, { op: "k8s_resources", resource: "cronjobs", namespace: ns || undefined }), [s.id, ns], 30_000);
+  const jobs = usePoll(() => rpc<any[]>(s.id, { op: "k8s_resources", resource: "jobs", namespace: ns || undefined }), [s.id, ns], 15_000);
+  if ((cron.error && !cron.data) || (jobs.error && !jobs.data)) return <ErrorBanner error={(cron.error ?? jobs.error)!} onRetry={() => { cron.reload(); jobs.reload(); }} />;
+  if (!cron.data || !jobs.data) return <Loading />;
+  const dur = (ms: number | null) => (ms == null ? "—" : ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`);
+  return (
+    <div className="col" style={{ gap: 16 }}>
+      <div className="card table-wrap">
+        <div className="card-head"><h3>CronJobs</h3></div>
+        {cron.data.length === 0 ? <div className="card-body small muted">No CronJobs.</div> : (
+          <table className="table">
+            <thead><tr><th>Name</th><th>Schedule</th><th>Active</th><th>Last run</th><th>Last success</th><th /></tr></thead>
+            <tbody>
+              {cron.data.map((c) => (
+                <tr key={`${c.namespace}/${c.name}`}>
+                  <td><div style={{ fontWeight: 500 }}>{c.name}</div><div className="small faint">{c.namespace}</div></td>
+                  <td className="mono small">{c.schedule}{c.timezone ? ` (${c.timezone})` : ""}{c.suspended && <span className="chip warn" style={{ marginLeft: 6 }}>Suspended</span>}</td>
+                  <td className="small tnum">{c.active}</td>
+                  <td className="small muted">{c.last_schedule ? ago(c.last_schedule) : "never"}</td>
+                  <td className="small muted">{c.last_success ? ago(c.last_success) : "—"}</td>
+                  <td className="actions">
+                    {can("k8s.control") && (
+                      <button
+                        className="btn sm"
+                        onClick={() => confirm({ title: `Run ${c.name} now?`, body: "Creates a Job from the CronJob's template, like kubectl create job --from=cronjob.", confirm: "Run now", action: () => rpc(s.id, { op: "k8s_cronjob_trigger", namespace: c.namespace, name: c.name }).then(() => jobs.reload()), success: `${c.name} started` })}
+                      >
+                        <PlayIcon size={15} /> Run now
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="card table-wrap">
+        <div className="card-head"><h3>Jobs</h3></div>
+        {jobs.data.length === 0 ? <div className="card-body small muted">No Jobs.</div> : (
+          <table className="table">
+            <thead><tr><th>Name</th><th>Status</th><th>Completions</th><th className="num">Failed pods</th><th>Duration</th><th>Started</th></tr></thead>
+            <tbody>
+              {[...jobs.data].sort((a, b) => b.created - a.created).map((j) => (
+                <tr key={`${j.namespace}/${j.name}`}>
+                  <td><Link to={`?tab=k8s&k=pods&q=${encodeURIComponent(j.name)}`} style={{ fontWeight: 500 }}>{j.name}</Link><div className="small faint">{j.namespace}{j.owner ? ` · from ${j.owner}` : ""}</div></td>
+                  <td><span className={`chip ${j.failing ? "crit" : j.status === "Complete" ? "good" : "warn"}`}>{j.status}</span></td>
+                  <td className="tnum small">{j.completions}</td>
+                  <td className="num tnum small">{j.failed}</td>
+                  <td className="small">{dur(j.duration_ms)}</td>
+                  <td className="small muted">{ago(j.created)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ ingress, storage, config
+
+function Ingresses({ s, ns }: { s: Server; ns: string }) {
+  const { data, error, reload } = usePoll(() => rpc<any[]>(s.id, { op: "k8s_resources", resource: "ingresses", namespace: ns || undefined }), [s.id, ns], 30_000);
+  if (error && !data) return <ErrorBanner error={error} onRetry={reload} />;
+  if (!data) return <Loading />;
+  return (
+    <div className="card table-wrap">
+      <div className="card-head"><h3>Ingresses</h3></div>
+      {data.length === 0 ? <div className="card-body small muted">No Ingresses.</div> : (
+        <table className="table">
+          <thead><tr><th>Name</th><th>Class</th><th>Rules</th><th>TLS</th><th>Address</th><th>Age</th></tr></thead>
+          <tbody>
+            {data.map((i) => (
+              <tr key={`${i.namespace}/${i.name}`}>
+                <td><div style={{ fontWeight: 500 }}>{i.name}</div><div className="small faint">{i.namespace}</div></td>
+                <td className="small">{i.class || "—"}</td>
+                <td className="small mono">
+                  {i.rules.map((r: any, k: number) => (
+                    <div key={k}>
+                      {r.host !== "*" ? <a href={`${i.tls.includes(r.host) ? "https" : "http"}://${r.host}${r.path || "/"}`} target="_blank" rel="noreferrer">{r.host}{r.path}</a> : `*${r.path}`} → {r.service}
+                    </div>
+                  ))}
+                </td>
+                <td className="small">{i.tls.length ? <span className="chip good"><Lock size={12} /> {i.tls.length}</span> : "—"}</td>
+                <td className="small mono">{i.address.join(", ") || "—"}</td>
+                <td className="small muted nowrap">{ago(i.created)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function Storage({ s, ns }: { s: Server; ns: string }) {
+  const { data, error, loading, reload } = usePoll(() => rpc<any[]>(s.id, { op: "k8s_resources", resource: "pvcs", namespace: ns || undefined }), [s.id, ns], 30_000);
+  if (error && !data) return <ErrorBanner error={error} onRetry={reload} />;
+  if (!data) return <Loading />;
+  return (
+    <div>
+      <Toolbar onRefresh={reload} loading={loading}><span className="small muted">Persistent volume claims</span></Toolbar>
+      <div className="card table-wrap">
+        {data.length === 0 ? <Empty icon={<HardDriveIcon size={26} />} title="No persistent volume claims" /> : (
+          <table className="table">
+            <thead><tr><th>Claim</th><th>Status</th><th className="num">Capacity</th><th>Storage class</th><th>Access</th><th>Volume</th><th>Age</th></tr></thead>
+            <tbody>
+              {data.map((v) => (
+                <tr key={`${v.namespace}/${v.name}`}>
+                  <td><div style={{ fontWeight: 500 }}>{v.name}</div><div className="small faint">{v.namespace}</div></td>
+                  <td><span className={`chip ${v.status === "Bound" ? "good" : v.status === "Pending" ? "warn" : "crit"}`}>{v.status}</span></td>
+                  <td className="num tnum small">{bytes(v.capacity || v.requested)}</td>
+                  <td className="small">{v.class || "—"}</td>
+                  <td className="small">{(v.modes ?? []).join(", ")}</td>
+                  <td className="small mono ellipsis" style={{ maxWidth: 220 }}>{v.volume || "—"}</td>
+                  <td className="small muted nowrap">{ago(v.created)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConfigRes({ s, ns }: { s: Server; ns: string }) {
+  const [kind, setKind] = useState<"configmaps" | "secrets">("configmaps");
+  const [q, setQ] = useState("");
+  const { data, error, loading, reload } = usePoll(() => rpc<any[]>(s.id, { op: "k8s_resources", resource: kind, namespace: ns || undefined }), [s.id, ns, kind], 30_000);
+  const n = q.trim().toLowerCase();
+  return (
+    <div>
+      <Toolbar onRefresh={reload} loading={loading}>
+        <Seg value={kind} onChange={setKind} options={[{ value: "configmaps", label: "ConfigMaps" }, { value: "secrets", label: "Secrets" }]} />
+        <SearchBox value={q} onChange={setQ} placeholder="Filter by name or key" />
+      </Toolbar>
+      {error && !data ? <ErrorBanner error={error} onRetry={reload} /> : !data ? <Loading /> : (
+        <div className="card table-wrap">
+          <table className="table">
+            <thead><tr><th>Name</th>{kind === "secrets" && <th>Type</th>}<th>Keys</th><th>Age</th></tr></thead>
+            <tbody>
+              {data.filter((c) => !n || c.name.toLowerCase().includes(n) || c.keys.some((k: string) => k.toLowerCase().includes(n))).map((c) => (
+                <tr key={`${c.namespace}/${c.name}`}>
+                  <td><div style={{ fontWeight: 500 }}>{c.name}</div><div className="small faint">{c.namespace}</div></td>
+                  {kind === "secrets" && <td className="small mono">{c.type}</td>}
+                  <td className="small">{c.keys.slice(0, 12).map((k: string) => <span key={k} className="chip outline mono" style={{ marginRight: 4, marginBottom: 2, fontSize: 11 }}>{k}</span>)}{c.keys.length > 12 && <span className="faint">+{c.keys.length - 12}</span>}</td>
+                  <td className="small muted nowrap">{ago(c.created)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {kind === "secrets" && <div className="card-body small faint">Only key names are shown — secret values never leave the server.</div>}
+        </div>
+      )}
     </div>
   );
 }

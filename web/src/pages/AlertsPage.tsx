@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { BellOff, Check, Settings } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Loading, Seg, usePoll, useToast } from "../components/ui";
+import { Empty, ErrorBanner, Loading, Seg, usePoll, useToast, Sorted } from "../components/ui";
 import { dateTime, duration } from "../format";
 
 export interface Alert {
@@ -32,19 +32,20 @@ export function SeverityChip({ a }: { a: Pick<Alert, "severity" | "resolved_at">
 export function AlertsTable({ rows, onAck, showServer = true }: { rows: Alert[]; onAck?: (a: Alert) => void; showServer?: boolean }) {
   return (
     <div className="table-wrap">
-      <table className="table">
+      <Sorted rows={rows} acc={{ sev: a => a.severity === "critical" ? 0 : 1, server: a => a.server, rule: a => a.message, started: a => a.started_at }}>{(S) => (
+<table className="table">
         <thead>
           <tr>
-            <th>Severity</th>
-            {showServer && <th>Server</th>}
-            <th>Alert</th>
-            <th>Started</th>
+            {S.th("sev", "Severity")}
+            {showServer && S.th("server", "Server")}
+            {S.th("rule", "Alert")}
+            {S.th("started", "Started")}
             <th>Duration</th>
             <th />
           </tr>
         </thead>
         <tbody>
-          {rows.map((a) => (
+          {S.rows.map((a) => (
             <tr key={a.id}>
               <td><SeverityChip a={a} /></td>
               {showServer && <td>{a.server ? <Link to={`/servers/${a.server_id}`}>{a.server}</Link> : <span className="faint">removed</span>}</td>}
@@ -70,6 +71,7 @@ export function AlertsTable({ rows, onAck, showServer = true }: { rows: Alert[];
           ))}
         </tbody>
       </table>
+)}</Sorted>
     </div>
   );
 }

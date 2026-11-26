@@ -30,6 +30,8 @@ pub struct AgentConn {
     streams: Mutex<HashMap<u64, mpsc::Sender<StreamEvent>>>,
     pub hello: RwLock<Option<AgentHello>>,
     pub latest: RwLock<Option<MetricsSample>>,
+    /// Last reported failed services (the agent checks them every ~30 s, not in every sample).
+    pub failed_services: RwLock<Option<Vec<String>>>,
     pub last_msg_at: AtomicU64,
     pub shutdown: Notify,
     next_id: AtomicU64,
@@ -111,7 +113,15 @@ impl AgentConn {
                 Some(AgentMsg::Hello(h))
             }
             AgentMsg::Metrics(m) => {
-                *self.latest.write().unwrap() = Some(m.clone());
+                if let Some(f) = &m.failed_services {
+                    *self.failed_services.write().unwrap() = Some(f.clone());
+                }
+                // Keep the summary lean: per-container / per-pod rows go to history only.
+                let mut lean = m.clone();
+                lean.containers.clear();
+                lean.pods.clear();
+                lean.failed_services = self.failed_services.read().unwrap().clone();
+                *self.latest.write().unwrap() = Some(lean);
                 Some(AgentMsg::Metrics(m))
             }
         }
@@ -173,6 +183,7 @@ impl Registry {
             streams: Mutex::new(HashMap::new()),
             hello: RwLock::new(None),
             latest: RwLock::new(None),
+            failed_services: RwLock::new(None),
             last_msg_at: AtomicU64::new(now_ms() as u64),
             shutdown: Notify::new(),
             next_id: AtomicU64::new(1),

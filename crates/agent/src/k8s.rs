@@ -300,7 +300,7 @@ impl Kube {
     }
 
     async fn send(&self, r: reqwest::RequestBuilder) -> Result<Value> {
-        let res = r.timeout(Duration::from_secs(20)).send().await.map_err(|e| anyhow!("Kubernetes API unreachable: {e}"))?;
+        let res = r.timeout(Duration::from_secs(20)).send().await.map_err(|e| anyhow!("Kubernetes API unreachable: {}", err_chain(&e)))?;
         let status = res.status();
         let body: Value = res.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
@@ -344,6 +344,269 @@ impl Kube {
             m.insert(key, (cpu, mem));
         }
         Some(m)
+    }
+
+    /// Per-container usage of one pod (`[{name, cpu, mem}]`).
+    async fn container_metrics(&self, ns: &str, name: &str) -> Option<Vec<Value>> {
+        let m = self.get(&format!("/apis/metrics.k8s.io/v1beta1/namespaces/{}/pods/{}", enc(ns), enc(name))).await.ok()?;
+        Some(
+            arr(&m, &["containers"])
+                .iter()
+                .map(|c| json!({ "name": s(c, &["name"]), "cpu": cpu_millis(s(c, &["usage", "cpu"])), "mem": bytes_of(s(c, &["usage", "memory"])) }))
+                .collect(),
+        )
+    }
+
+    /// Usage of every pod with its owning workload, for the stored history.
+    pub async fn pod_usage(&self) -> Option<Vec<monitorlab_common::PodUsage>> {
+        let fut = async {
+            let (pods, metrics) = tokio::join!(self.items("/api/v1/pods"), self.items("/apis/metrics.k8s.io/v1beta1/pods"));
+            let owners: std::collections::HashMap<String, String> = pods
+                .ok()?
+                .iter()
+                .map(|p| (format!("{}/{}", s(p, &["metadata", "namespace"]), s(p, &["metadata", "name"])), workload_of(p)))
+                .collect();
+            Some(
+                metrics
+                    .ok()?
+                    .iter()
+                    .map(|m| {
+                        let ns = s(m, &["metadata", "namespace"]).to_string();
+                        let name = s(m, &["metadata", "name"]).to_string();
+                        let (mut cpu, mut mem) = (0.0, 0.0);
+                        for c in arr(m, &["containers"]) {
+                            cpu += cpu_millis(s(c, &["usage", "cpu"]));
+                            mem += bytes_of(s(c, &["usage", "memory"]));
+                        }
+                        let owner = owners.get(&format!("{ns}/{name}")).cloned().unwrap_or_default();
+                        monitorlab_common::PodUsage { ns, name, owner, cpu, mem: mem as u64 }
+                    })
+                    .collect(),
+            )
+        };
+        tokio::time::timeout(Duration::from_secs(10), fut).await.ok().flatten()
+    }
+
+    pub async fn namespace_usage(&self) -> Result<Value> {
+        let (nss, pods, metrics) = tokio::join!(self.items("/api/v1/namespaces"), self.items("/api/v1/pods"), self.pod_metrics(None));
+        let now = now_ms();
+        let mut rows: std::collections::BTreeMap<String, Value> = nss?
+            .iter()
+            .map(|n| {
+                let name = s(n, &["metadata", "name"]).to_string();
+                (
+                    name.clone(),
+                    json!({ "name": name, "phase": s(n, &["status", "phase"]), "created": ts_ms(s(n, &["metadata", "creationTimestamp"])),
+                            "pods": 0, "running": 0, "failing": 0, "restarts": 0, "cpu": 0.0, "mem": 0.0,
+                            "cpu_req": 0.0, "cpu_lim": 0.0, "mem_req": 0.0, "mem_lim": 0.0 }),
+                )
+            })
+            .collect();
+        for p in pods? {
+            let ns = s(&p, &["metadata", "namespace"]).to_string();
+            let Some(r) = rows.get_mut(&ns) else { continue };
+            let add = |r: &mut Value, k: &str, v: f64| r[k] = json!(r[k].as_f64().unwrap_or(0.0) + v);
+            add(r, "pods", 1.0);
+            if s(&p, &["status", "phase"]) == "Running" {
+                add(r, "running", 1.0);
+            }
+            if pod_status(&p, now).1 {
+                add(r, "failing", 1.0);
+            }
+            let restarts: u64 = arr(&p, &["status", "containerStatuses"]).iter().map(|c| c.get("restartCount").and_then(Value::as_u64).unwrap_or(0)).sum();
+            add(r, "restarts", restarts as f64);
+            if s(&p, &["status", "phase"]) == "Running" || s(&p, &["status", "phase"]) == "Pending" {
+                add(r, "cpu_req", res_sum(&p, "requests", "cpu"));
+                add(r, "cpu_lim", res_sum(&p, "limits", "cpu"));
+                add(r, "mem_req", res_sum(&p, "requests", "memory"));
+                add(r, "mem_lim", res_sum(&p, "limits", "memory"));
+            }
+            if let Some((c, m)) = metrics.as_ref().and_then(|m| m.get(&format!("{ns}/{}", s(&p, &["metadata", "name"])))) {
+                add(r, "cpu", *c);
+                add(r, "mem", *m);
+            }
+        }
+        Ok(json!({ "namespaces": rows.into_values().collect::<Vec<_>>(), "metrics_available": metrics.is_some() }))
+    }
+
+    pub async fn node_detail(&self, name: &str) -> Result<Value> {
+        let field = format!("spec.nodeName={name}");
+        let (p1, p2, p3) = (
+            format!("/api/v1/nodes/{}", enc(name)),
+            format!("/api/v1/pods?fieldSelector={}", enc(&field)),
+            format!("/apis/metrics.k8s.io/v1beta1/nodes/{}", enc(name)),
+        );
+        let (node, pods, nm, pm) = tokio::join!(self.get(&p1), self.items(&p2), self.get(&p3), self.pod_metrics(None));
+        let n = node?;
+        let pods = pods?;
+        let now = now_ms();
+        let mut alloc = (0.0, 0.0, 0.0, 0.0);
+        let rows: Vec<Value> = pods
+            .iter()
+            .map(|p| {
+                let active = matches!(s(p, &["status", "phase"]), "Running" | "Pending");
+                let (cr, cl, mr, ml) = (res_sum(p, "requests", "cpu"), res_sum(p, "limits", "cpu"), res_sum(p, "requests", "memory"), res_sum(p, "limits", "memory"));
+                if active {
+                    alloc.0 += cr;
+                    alloc.1 += cl;
+                    alloc.2 += mr;
+                    alloc.3 += ml;
+                }
+                let key = format!("{}/{}", s(p, &["metadata", "namespace"]), s(p, &["metadata", "name"]));
+                let u = pm.as_ref().and_then(|m| m.get(&key));
+                let (status, failing) = pod_status(p, now);
+                json!({
+                    "namespace": s(p, &["metadata", "namespace"]), "name": s(p, &["metadata", "name"]), "status": status, "failing": failing,
+                    "phase": s(p, &["status", "phase"]),
+                    "restarts": arr(p, &["status", "containerStatuses"]).iter().map(|c| c.get("restartCount").and_then(Value::as_u64).unwrap_or(0)).sum::<u64>(),
+                    "cpu": u.map(|x| x.0), "mem": u.map(|x| x.1), "cpu_req": cr, "cpu_lim": cl, "mem_req": mr, "mem_lim": ml,
+                    "created": ts_ms(s(p, &["metadata", "creationTimestamp"])),
+                })
+            })
+            .collect();
+        let nm = nm.ok();
+        Ok(json!({
+            "name": name,
+            "ready": node_ready(&n),
+            "roles": node_roles(&n),
+            "unschedulable": n.pointer("/spec/unschedulable").and_then(Value::as_bool).unwrap_or(false),
+            "taints": n.pointer("/spec/taints").cloned().unwrap_or(json!([])),
+            "labels": n.pointer("/metadata/labels").cloned().unwrap_or(json!({})),
+            "conditions": arr(&n, &["status", "conditions"]).iter().map(|c| json!({ "type": s(c, &["type"]), "status": s(c, &["status"]), "reason": s(c, &["reason"]), "message": s(c, &["message"]), "since": ts_ms(s(c, &["lastTransitionTime"])) })).collect::<Vec<_>>(),
+            "addresses": n.pointer("/status/addresses").cloned().unwrap_or(json!([])),
+            "info": n.pointer("/status/nodeInfo").cloned().unwrap_or(json!({})),
+            "capacity": { "cpu": cpu_millis(s(&n, &["status", "capacity", "cpu"])), "mem": bytes_of(s(&n, &["status", "capacity", "memory"])), "pods": s(&n, &["status", "capacity", "pods"]).parse::<u32>().unwrap_or(0), "storage": bytes_of(s(&n, &["status", "capacity", "ephemeral-storage"])) },
+            "allocatable": { "cpu": cpu_millis(s(&n, &["status", "allocatable", "cpu"])), "mem": bytes_of(s(&n, &["status", "allocatable", "memory"])), "pods": s(&n, &["status", "allocatable", "pods"]).parse::<u32>().unwrap_or(0) },
+            "allocated": { "cpu_req": alloc.0, "cpu_lim": alloc.1, "mem_req": alloc.2, "mem_lim": alloc.3 },
+            "usage": nm.as_ref().map(|m| json!({ "cpu": cpu_millis(s(m, &["usage", "cpu"])), "mem": bytes_of(s(m, &["usage", "memory"])) })),
+            "images": arr(&n, &["status", "images"]).len(),
+            "created": ts_ms(s(&n, &["metadata", "creationTimestamp"])),
+            "pods": rows,
+        }))
+    }
+
+    pub async fn resources(&self, resource: &str, ns: Option<&str>) -> Result<Value> {
+        let now = now_ms();
+        let rows: Vec<Value> = match resource {
+            "jobs" => self
+                .items(&Self::list_path("/apis/batch/v1", "jobs", ns))
+                .await?
+                .iter()
+                .map(|j| {
+                    let succeeded = j.pointer("/status/succeeded").and_then(Value::as_u64).unwrap_or(0);
+                    let failed = j.pointer("/status/failed").and_then(Value::as_u64).unwrap_or(0);
+                    let active = j.pointer("/status/active").and_then(Value::as_u64).unwrap_or(0);
+                    let completions = j.pointer("/spec/completions").and_then(Value::as_u64).unwrap_or(1);
+                    let cond = arr(j, &["status", "conditions"]).iter().find(|c| s(c, &["status"]) == "True").map(|c| s(c, &["type"]).to_string());
+                    let start = ts_ms(s(j, &["status", "startTime"]));
+                    let end = ts_ms(s(j, &["status", "completionTime"]));
+                    json!({
+                        "namespace": s(j, &["metadata", "namespace"]), "name": s(j, &["metadata", "name"]),
+                        "status": cond.clone().unwrap_or_else(|| if active > 0 { "Running".into() } else { "Pending".into() }),
+                        "failing": cond.as_deref() == Some("Failed"),
+                        "completions": format!("{succeeded}/{completions}"), "failed": failed, "active": active,
+                        "duration_ms": if start > 0 { Some(if end > 0 { end - start } else { now - start }) } else { None },
+                        "owner": arr(j, &["metadata", "ownerReferences"]).first().map(|o| s(o, &["name"]).to_string()),
+                        "created": ts_ms(s(j, &["metadata", "creationTimestamp"])),
+                    })
+                })
+                .collect(),
+            "cronjobs" => self
+                .items(&Self::list_path("/apis/batch/v1", "cronjobs", ns))
+                .await?
+                .iter()
+                .map(|c| {
+                    json!({
+                        "namespace": s(c, &["metadata", "namespace"]), "name": s(c, &["metadata", "name"]),
+                        "schedule": s(c, &["spec", "schedule"]), "timezone": s(c, &["spec", "timeZone"]),
+                        "suspended": c.pointer("/spec/suspend").and_then(Value::as_bool).unwrap_or(false),
+                        "active": arr(c, &["status", "active"]).len(),
+                        "last_schedule": ts_ms(s(c, &["status", "lastScheduleTime"])),
+                        "last_success": ts_ms(s(c, &["status", "lastSuccessfulTime"])),
+                        "created": ts_ms(s(c, &["metadata", "creationTimestamp"])),
+                    })
+                })
+                .collect(),
+            "ingresses" => self
+                .items(&Self::list_path("/apis/networking.k8s.io/v1", "ingresses", ns))
+                .await?
+                .iter()
+                .map(|i| {
+                    let mut rules = Vec::new();
+                    for r in arr(i, &["spec", "rules"]) {
+                        let host = s(r, &["host"]);
+                        for p in arr(r, &["http", "paths"]) {
+                            let svc = s(p, &["backend", "service", "name"]);
+                            let port = p.pointer("/backend/service/port/number").map(|v| v.to_string()).unwrap_or_else(|| s(p, &["backend", "service", "port", "name"]).to_string());
+                            rules.push(json!({ "host": if host.is_empty() { "*" } else { host }, "path": s(p, &["path"]), "service": format!("{svc}:{port}") }));
+                        }
+                    }
+                    let tls_hosts: Vec<&str> = arr(i, &["spec", "tls"]).iter().flat_map(|t| arr(t, &["hosts"]).iter().filter_map(Value::as_str)).collect();
+                    json!({
+                        "namespace": s(i, &["metadata", "namespace"]), "name": s(i, &["metadata", "name"]),
+                        "class": i.pointer("/spec/ingressClassName").and_then(Value::as_str).unwrap_or(""),
+                        "rules": rules, "tls": tls_hosts,
+                        "address": arr(i, &["status", "loadBalancer", "ingress"]).iter().map(|a| if s(a, &["ip"]).is_empty() { s(a, &["hostname"]) } else { s(a, &["ip"]) }).collect::<Vec<_>>(),
+                        "created": ts_ms(s(i, &["metadata", "creationTimestamp"])),
+                    })
+                })
+                .collect(),
+            "pvcs" => self
+                .items(&Self::list_path("/api/v1", "persistentvolumeclaims", ns))
+                .await?
+                .iter()
+                .map(|v| {
+                    json!({
+                        "namespace": s(v, &["metadata", "namespace"]), "name": s(v, &["metadata", "name"]),
+                        "status": s(v, &["status", "phase"]), "volume": s(v, &["spec", "volumeName"]),
+                        "capacity": bytes_of(s(v, &["status", "capacity", "storage"])), "requested": bytes_of(s(v, &["spec", "resources", "requests", "storage"])),
+                        "class": s(v, &["spec", "storageClassName"]), "modes": v.pointer("/spec/accessModes").cloned().unwrap_or(json!([])),
+                        "created": ts_ms(s(v, &["metadata", "creationTimestamp"])),
+                    })
+                })
+                .collect(),
+            "configmaps" | "secrets" => self
+                .items(&Self::list_path("/api/v1", resource, ns))
+                .await?
+                .iter()
+                .map(|v| {
+                    // Only key names: secret (and config) values never leave the server.
+                    let mut keys: Vec<String> = v.get("data").and_then(Value::as_object).map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                    keys.extend(v.get("binaryData").and_then(Value::as_object).map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
+                    json!({
+                        "namespace": s(v, &["metadata", "namespace"]), "name": s(v, &["metadata", "name"]),
+                        "type": s(v, &["type"]), "keys": keys,
+                        "created": ts_ms(s(v, &["metadata", "creationTimestamp"])),
+                    })
+                })
+                .collect(),
+            other => bail!("unknown resource '{other}'"),
+        };
+        Ok(Value::Array(rows))
+    }
+
+    /// Run a CronJob now (what `kubectl create job --from=cronjob/x` does).
+    pub async fn trigger_cronjob(&self, ns: &str, name: &str) -> Result<Value> {
+        let cj = self.get(&format!("/apis/batch/v1/namespaces/{}/cronjobs/{}", enc(ns), enc(name))).await?;
+        let spec = cj.pointer("/spec/jobTemplate/spec").cloned().ok_or_else(|| anyhow!("cronjob has no job template"))?;
+        let base: String = name.chars().take(40).collect();
+        let job_name = format!("{base}-manual-{}", now_ms() / 1000 % 100_000_000);
+        let mut labels = cj.pointer("/spec/jobTemplate/metadata/labels").cloned().unwrap_or(json!({}));
+        if !labels.is_object() {
+            labels = json!({});
+        }
+        let body = json!({
+            "apiVersion": "batch/v1", "kind": "Job",
+            "metadata": {
+                "name": job_name, "namespace": ns, "labels": labels,
+                "annotations": { "cronjob.kubernetes.io/instantiate": "manual" },
+                "ownerReferences": [{ "apiVersion": "batch/v1", "kind": "CronJob", "name": name, "uid": s(&cj, &["metadata", "uid"]), "controller": true }],
+            },
+            "spec": spec,
+        });
+        let r = self.req(reqwest::Method::POST, &format!("/apis/batch/v1/namespaces/{}/jobs", enc(ns))).json(&body);
+        self.send(r).await?;
+        Ok(json!({ "ok": true, "job": job_name }))
     }
 
     // ------------------------------------------------------------------ read
@@ -466,6 +729,12 @@ impl Kube {
                     "owner": owner,
                     "cpu": u.map(|x| x.0),
                     "mem": u.map(|x| x.1),
+                    "cpu_req": res_sum(p, "requests", "cpu"),
+                    "cpu_lim": res_sum(p, "limits", "cpu"),
+                    "mem_req": res_sum(p, "requests", "memory"),
+                    "mem_lim": res_sum(p, "limits", "memory"),
+                    "workload": workload_of(p),
+                    "oom_killed": statuses.iter().any(|c| c.pointer("/lastState/terminated/reason").and_then(Value::as_str) == Some("OOMKilled") || c.pointer("/state/terminated/reason").and_then(Value::as_str) == Some("OOMKilled")),
                 })
             })
             .collect();
@@ -585,6 +854,7 @@ impl Kube {
         if let Some(m) = v.get_mut("metadata").and_then(Value::as_object_mut) {
             m.remove("managedFields");
         }
+        let usage = if kind == K8sKind::Pod { self.container_metrics(ns.unwrap_or_default(), name).await } else { None };
         // Events for this object, newest first.
         let field = format!("involvedObject.name={name}");
         let ev_path = match ns.filter(|n| !n.is_empty()) {
@@ -607,7 +877,7 @@ impl Kube {
             })
             .collect();
         events.sort_by_key(|r| std::cmp::Reverse(r["last"].as_i64().unwrap_or(0)));
-        Ok(json!({ "object": v, "events": events }))
+        Ok(json!({ "object": v, "events": events, "usage": usage }))
     }
 
     // ------------------------------------------------------------------ actions
@@ -716,7 +986,7 @@ impl Kube {
             .query(&q)
             .send()
             .await
-            .map_err(|e| anyhow!("Kubernetes API unreachable: {e}"))?;
+            .map_err(|e| anyhow!("Kubernetes API unreachable: {}", err_chain(&e)))?;
         if !res.status().is_success() {
             let st = res.status();
             let body: Value = res.json().await.unwrap_or(Value::Null);
@@ -1006,6 +1276,39 @@ pub fn bytes_of(q: &str) -> f64 {
     q.parse::<f64>().unwrap_or(0.0)
 }
 
+/// Sum of container requests / limits of a pod (`cpu` in millicores, `memory` in bytes).
+fn res_sum(p: &Value, kind: &str, res: &str) -> f64 {
+    arr(p, &["spec", "containers"])
+        .iter()
+        .map(|c| {
+            let q = s(c, &["resources", kind, res]);
+            if res == "cpu" {
+                cpu_millis(q)
+            } else {
+                bytes_of(q)
+            }
+        })
+        .sum()
+}
+
+/// Name of the workload that owns a pod: ReplicaSet `web-7d4b9c6f5` → Deployment `web`.
+pub fn workload_of(p: &Value) -> String {
+    let Some(o) = arr(p, &["metadata", "ownerReferences"]).first() else { return String::new() };
+    let name = s(o, &["name"]);
+    if s(o, &["kind"]) == "ReplicaSet" {
+        let hash = s(p, &["metadata", "labels", "pod-template-hash"]);
+        if !hash.is_empty() {
+            if let Some(n) = name.strip_suffix(&format!("-{hash}")) {
+                return n.to_string();
+            }
+        }
+        if let Some((n, _)) = name.rsplit_once('-') {
+            return n.to_string();
+        }
+    }
+    name.to_string()
+}
+
 fn node_ready(n: &Value) -> bool {
     arr(n, &["status", "conditions"]).iter().any(|c| s(c, &["type"]) == "Ready" && s(c, &["status"]) == "True")
 }
@@ -1206,4 +1509,32 @@ mod tests {
         assert_eq!(s.not_ready_nodes, vec!["b".to_string()]);
         assert_eq!(s.failing, vec!["x/bad: ImagePullBackOff".to_string()]);
     }
+
+    #[test]
+    fn owners_and_resources() {
+        let p = json!({ "metadata": { "labels": { "pod-template-hash": "7d4b9c6f5" }, "ownerReferences": [{ "kind": "ReplicaSet", "name": "web-api-7d4b9c6f5" }] },
+                        "spec": { "containers": [{ "resources": { "requests": { "cpu": "250m", "memory": "128Mi" }, "limits": { "cpu": "1" } } }, { "resources": { "requests": { "cpu": "50m" } } }] } });
+        assert_eq!(workload_of(&p), "web-api");
+        assert_eq!(res_sum(&p, "requests", "cpu"), 300.0);
+        assert_eq!(res_sum(&p, "limits", "cpu"), 1000.0);
+        assert_eq!(res_sum(&p, "requests", "memory"), 134217728.0);
+        let sts = json!({ "metadata": { "ownerReferences": [{ "kind": "StatefulSet", "name": "db" }] } });
+        assert_eq!(workload_of(&sts), "db");
+        assert_eq!(workload_of(&json!({})), "");
+    }
+}
+
+/// Full error chain, so "error sending request" also shows timeout / refused / TLS.
+fn err_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cur = c.source();
+    }
+    if out.contains("timed out") || out.contains("deadline") {
+        out.push_str(" (timed out: a firewall may be dropping traffic to the API port)");
+    }
+    out
 }

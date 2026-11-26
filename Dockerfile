@@ -43,6 +43,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/monitorlab-hub /usr/local/bin/monitorlab-hub
 COPY --from=build /out/agents /opt/monitorlab/agents
+# macOS agents are built by CI on a Mac runner and dropped into extra-agents/ (empty for local builds).
+COPY extra-agents/ /opt/monitorlab/agents/
 ENV MONITORLAB_DATA_DIR=/data \
     MONITORLAB_LISTEN=0.0.0.0:8443 \
     MONITORLAB_AGENTS_DIR=/opt/monitorlab/agents

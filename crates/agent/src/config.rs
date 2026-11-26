@@ -43,11 +43,14 @@ pub struct DockerConfig {
     /// Unix socket path. Defaults to `DOCKER_HOST` or `/var/run/docker.sock`.
     #[serde(default)]
     pub socket: Option<String>,
+    /// Keep per-container CPU / memory for the hub's history charts (one stats stream per container).
+    #[serde(default = "d_true")]
+    pub history: bool,
 }
 
 impl Default for DockerConfig {
     fn default() -> Self {
-        Self { enabled: true, socket: None }
+        Self { enabled: true, socket: None, history: true }
     }
 }
 
@@ -106,6 +109,8 @@ pub fn default_config_path() -> PathBuf {
     if cfg!(windows) {
         let base = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
         Path::new(&base).join("MonitorLab").join("agent.toml")
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/MonitorLab/agent.toml")
     } else {
         PathBuf::from("/etc/monitorlab/agent.toml")
     }

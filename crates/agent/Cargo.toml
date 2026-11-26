@@ -41,6 +41,9 @@ roxmltree = "0.20"
 tiberius = { version = "0.12", default-features = false, features = ["tds73", "rustls"], optional = true }
 tokio-util = { version = "0.7", features = ["compat"], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
 winreg = "0.52"

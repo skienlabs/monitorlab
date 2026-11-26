@@ -49,13 +49,54 @@ jobs:
       - name: Rust unit tests
         run: cargo test --workspace --locked
 
+  # macOS agents are built on a Mac runner (Apple's linker and SDK are not available in the Linux image).
+  # A failure here never blocks a deploy; the hub just ships without the macOS agent until it is fixed.
+  agent-macos:
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build macOS agents
+        run: |
+          cargo build --release --locked -p monitorlab-agent --target aarch64-apple-darwin
+          cargo build --release --locked -p monitorlab-agent --target x86_64-apple-darwin
+          mkdir -p out
+          cp target/aarch64-apple-darwin/release/monitorlab-agent out/monitorlab-agent-macos-arm64
+          cp target/x86_64-apple-darwin/release/monitorlab-agent out/monitorlab-agent-macos-amd64
+          chmod +x out/*
+          ./out/monitorlab-agent-macos-arm64 --version
+
+      - name: Upload macOS agents
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-agents
+          path: out/
+          if-no-files-found: error
+
   build-deploy:
-    needs: test
+    needs: [test, agent-macos]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Fetch macOS agents (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-agents
+          path: extra-agents
 
       # Authenticate to GCP
       - name: Auth GCP

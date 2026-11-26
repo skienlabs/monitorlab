@@ -40,11 +40,18 @@ pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
 
 // ======================================================================= Linux (systemd)
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const UNIT_PATH: &str = "/etc/systemd/system/monitorlab-agent.service";
-#[cfg(unix)]
-const BIN_PATH: &str = "/usr/local/bin/monitorlab-agent";
-#[cfg(unix)]
+/// The agent owns its binary directory so it can update itself when the hub asks.
+#[cfg(target_os = "linux")]
+const BIN_DIR: &str = "/opt/monitorlab/bin";
+#[cfg(target_os = "linux")]
+const BIN_PATH: &str = "/opt/monitorlab/bin/monitorlab-agent";
+#[cfg(target_os = "linux")]
+const BIN_LINK: &str = "/usr/local/bin/monitorlab-agent";
+#[cfg(target_os = "linux")]
+const POLKIT_RULE: &str = "/etc/polkit-1/rules.d/50-monitorlab-agent.rules";
+#[cfg(target_os = "linux")]
 const SERVICE_USER: &str = "monitorlab";
 #[cfg(target_os = "linux")]
 const K3S_KUBECONFIG: &str = "/etc/rancher/k3s/k3s.yaml";
@@ -54,7 +61,7 @@ fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new(cmd).args(args).output().with_context(|| format!("running {cmd}"))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn group_exists(g: &str) -> bool {
     run("getent", &["group", g]).map(|o| o.status.success()).unwrap_or(false)
 }
@@ -64,22 +71,12 @@ fn is_root() -> bool {
     run("id", &["-u"]).map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0").unwrap_or(false)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub async fn install(args: InstallArgs) -> Result<()> {
     if !is_root() {
         bail!("install must be run as root (use sudo)");
     }
     let cfg_path = enroll_and_save(&args).await?;
-
-    // Binary
-    let me = std::env::current_exe()?;
-    if me != Path::new(BIN_PATH) {
-        let tmp = format!("{BIN_PATH}.new");
-        std::fs::copy(&me, &tmp).context("copying binary")?;
-        std::fs::rename(&tmp, BIN_PATH)?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(BIN_PATH, std::fs::Permissions::from_mode(0o755))?;
-    }
 
     // Dedicated unprivileged user with access to docker / mssql groups if present.
     if !run("id", &["-u", SERVICE_USER])?.status.success() {
@@ -90,6 +87,45 @@ pub async fn install(args: InstallArgs) -> Result<()> {
         }
     }
     let groups: Vec<&str> = ["docker", "mssql", "systemd-journal"].into_iter().filter(|g| group_exists(g)).collect();
+    let svc_uid: u32 = String::from_utf8_lossy(&run("id", &["-u", SERVICE_USER])?.stdout).trim().parse()?;
+    let svc_gid: u32 = String::from_utf8_lossy(&run("id", &["-g", SERVICE_USER])?.stdout).trim().parse()?;
+
+    // Binary in a directory owned by the service user (self-update), plus a link on the PATH.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(BIN_DIR)?;
+        std::os::unix::fs::chown(BIN_DIR, Some(svc_uid), Some(svc_gid))?;
+        std::fs::set_permissions(BIN_DIR, std::fs::Permissions::from_mode(0o755))?;
+        let me = std::env::current_exe()?;
+        if me != Path::new(BIN_PATH) {
+            let tmp = format!("{BIN_PATH}.new");
+            std::fs::copy(&me, &tmp).context("copying binary")?;
+            std::fs::rename(&tmp, BIN_PATH)?;
+        }
+        std::fs::set_permissions(BIN_PATH, std::fs::Permissions::from_mode(0o755))?;
+        std::os::unix::fs::chown(BIN_PATH, Some(svc_uid), Some(svc_gid))?;
+        let link = Path::new(BIN_LINK);
+        if link.exists() || link.is_symlink() {
+            let _ = std::fs::remove_file(link);
+        }
+        std::os::unix::fs::symlink(BIN_PATH, link).context("linking the binary into /usr/local/bin")?;
+    }
+
+    // Allow the agent to start / stop / restart services through systemd (polkit).
+    #[cfg(target_os = "linux")]
+    if Path::new("/etc/polkit-1/rules.d").is_dir() {
+        let rule = format!(
+            "// Installed by monitorlab-agent: lets the agent manage systemd services when you use MonitorLab.\n\
+polkit.addRule(function(action, subject) {{\n\
+  if ((action.id == \"org.freedesktop.systemd1.manage-units\" ||\n\
+       action.id == \"org.freedesktop.systemd1.manage-unit-files\" ||\n\
+       action.id == \"org.freedesktop.systemd1.reload-daemon\") && subject.user == \"{SERVICE_USER}\") {{\n\
+    return polkit.Result.YES;\n\
+  }}\n\
+}});\n"
+        );
+        std::fs::write(POLKIT_RULE, rule)?;
+    }
 
     // Config readable only by the service user.
     let uid: u32 = String::from_utf8_lossy(&run("id", &["-u", SERVICE_USER])?.stdout).trim().parse()?;
@@ -154,7 +190,7 @@ WantedBy=multi-user.target\n",
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn uninstall(purge: bool) -> Result<()> {
     if !is_root() {
         bail!("uninstall must be run as root (use sudo)");
@@ -175,8 +211,115 @@ pub fn uninstall(purge: bool) -> Result<()> {
             Err(e) => eprintln!("warning: could not remove user '{SERVICE_USER}': {e}"),
         }
         let _ = std::fs::remove_file(BIN_PATH);
+        let _ = std::fs::remove_file(BIN_LINK);
+        let _ = std::fs::remove_dir(BIN_DIR);
+        #[cfg(target_os = "linux")]
+        let _ = std::fs::remove_file(POLKIT_RULE);
     }
     println!("monitorlab-agent service removed{}.", if purge { " (config, user and binary purged)" } else { "" });
+    Ok(())
+}
+
+// ======================================================================= macOS (launchd)
+
+#[cfg(target_os = "macos")]
+const PLIST_PATH: &str = "/Library/LaunchDaemons/com.skien.monitorlab-agent.plist";
+#[cfg(target_os = "macos")]
+const MAC_BIN_DIR: &str = "/usr/local/lib/monitorlab";
+#[cfg(target_os = "macos")]
+const MAC_BIN_PATH: &str = "/usr/local/lib/monitorlab/monitorlab-agent";
+#[cfg(target_os = "macos")]
+const MAC_BIN_LINK: &str = "/usr/local/bin/monitorlab-agent";
+#[cfg(target_os = "macos")]
+const MAC_LABEL: &str = "com.skien.monitorlab-agent";
+
+/// macOS: a LaunchDaemon that runs as root (it must reach the Docker socket and read system metrics).
+/// launchd restarts it whenever it exits, which is also how self-update takes effect.
+#[cfg(target_os = "macos")]
+pub async fn install(args: InstallArgs) -> Result<()> {
+    if !is_root() {
+        bail!("install must be run as root (use sudo)");
+    }
+    let cfg_path = enroll_and_save(&args).await?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(MAC_BIN_DIR)?;
+        std::fs::set_permissions(MAC_BIN_DIR, std::fs::Permissions::from_mode(0o755))?;
+        let me = std::env::current_exe()?;
+        if me != Path::new(MAC_BIN_PATH) {
+            let tmp = format!("{MAC_BIN_PATH}.new");
+            std::fs::copy(&me, &tmp).context("copying binary")?;
+            std::fs::rename(&tmp, MAC_BIN_PATH)?;
+        }
+        std::fs::set_permissions(MAC_BIN_PATH, std::fs::Permissions::from_mode(0o755))?;
+        // Files fetched with curl carry no quarantine flag, but clear it in case the binary came from a browser.
+        let _ = run("xattr", &["-d", "com.apple.quarantine", MAC_BIN_PATH]);
+        std::fs::create_dir_all("/usr/local/bin")?;
+        let link = Path::new(MAC_BIN_LINK);
+        if link.exists() || link.is_symlink() {
+            let _ = std::fs::remove_file(link);
+        }
+        std::os::unix::fs::symlink(MAC_BIN_PATH, link).context("linking the binary into /usr/local/bin")?;
+    }
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{MAC_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{MAC_BIN_PATH}</string>
+    <string>run</string>
+    <string>--config</string>
+    <string>{cfg}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/var/log/monitorlab-agent.log</string>
+  <key>StandardErrorPath</key><string>/var/log/monitorlab-agent.log</string>
+</dict>
+</plist>
+"#,
+        cfg = cfg_path.display()
+    );
+    std::fs::write(PLIST_PATH, plist)?;
+    run("chown", &["root:wheel", PLIST_PATH])?;
+    std::fs::set_permissions(PLIST_PATH, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o644))?;
+    // Replace a previous install, then load the new one.
+    let _ = run("launchctl", &["bootout", &format!("system/{MAC_LABEL}")]);
+    let o = run("launchctl", &["bootstrap", "system", PLIST_PATH])?;
+    if !o.status.success() {
+        bail!("launchctl bootstrap failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+    }
+    let _ = run("launchctl", &["kickstart", "-k", &format!("system/{MAC_LABEL}")]);
+    println!("Service {MAC_LABEL} installed and started.");
+    println!("Logs: tail -f /var/log/monitorlab-agent.log   |   status: sudo launchctl print system/{MAC_LABEL}");
+    println!("Docker: the agent looks for /var/run/docker.sock, then the socket Docker Desktop / OrbStack / Colima keep in a user's home folder.");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn uninstall(purge: bool) -> Result<()> {
+    if !is_root() {
+        bail!("uninstall must be run as root (use sudo)");
+    }
+    let _ = run("launchctl", &["bootout", &format!("system/{MAC_LABEL}")]);
+    let _ = std::fs::remove_file(PLIST_PATH);
+    if purge {
+        let cfg = default_config_path();
+        let _ = std::fs::remove_file(&cfg);
+        if let Some(dir) = cfg.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+        let _ = std::fs::remove_file(MAC_BIN_PATH);
+        let _ = std::fs::remove_file(MAC_BIN_LINK);
+        let _ = std::fs::remove_dir(MAC_BIN_DIR);
+        let _ = std::fs::remove_file("/var/log/monitorlab-agent.log");
+    }
+    println!("monitorlab-agent service removed{}.", if purge { " (config and binary purged)" } else { "" });
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Activity, ChevronRight, CirclePlay, CircleStop, Cpu, Eye, EyeOff, FileText, Info, ListTree, MemoryStick, Network, Pause, PencilLine, Play, RefreshCcwDot, RotateCcw, SquareTerminal, Trash2, Zap } from "lucide-react";
+import { UsageHistory } from "../components/UsageHistory";
+import { Activity, History, ChevronRight, CirclePlay, CircleStop, Cpu, Eye, EyeOff, FileText, Info, ListTree, MemoryStick, Network, Pause, PencilLine, Play, RefreshCcwDot, RotateCcw, SquareTerminal, Trash2, Zap } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Server } from "../types";
@@ -254,6 +255,7 @@ export function ContainerPage() {
     { key: "logs", label: "Logs", icon: <FileText size={17} />, show: can("logs.view") },
     { key: "terminal", label: "Terminal", icon: <SquareTerminal size={17} />, show: can("containers.exec") },
     { key: "stats", label: "Live stats", icon: <Activity size={17} />, show: true },
+    { key: "history", label: "History", icon: <History size={17} />, show: true },
     { key: "inspect", label: "Details", icon: <Info size={17} />, show: true },
   ].filter((t) => t.show);
   const tab = tabs.some((t) => t.key === params.get("tab")) ? params.get("tab")! : tabs[0].key;
@@ -337,6 +339,7 @@ export function ContainerPage() {
       {tab === "terminal" &&
         (running ? <ContainerTerminal serverId={serverId} containerId={d.Id} /> : <Empty icon={<SquareTerminal size={26} />} title="Container is not running">Start the container to open a terminal.</Empty>)}
       {tab === "stats" && (running ? <StatsTab serverId={serverId} id={d.Id} /> : <Empty icon={<Activity size={26} />} title="Container is not running" />)}
+      {tab === "history" && <UsageHistory serverId={serverId} kind="container" name={name} />}
       {tab === "inspect" && <InspectTab data={d} />}
     </div>
   );

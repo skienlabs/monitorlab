@@ -11,6 +11,13 @@ export function OsIcon({ os, size = 20 }: { os?: string | null; size?: number })
         <rect x="13" y="13" width="8" height="8" rx="1.5" fill="currentColor" opacity="0.9" />
       </svg>
     );
+  if (os === "macos")
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" aria-label="macOS" role="img" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="4" width="18" height="12" rx="2" />
+        <path d="M8 20h8M12 16v4" />
+      </svg>
+    );
   if (os === "linux")
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" aria-label="Linux" role="img" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

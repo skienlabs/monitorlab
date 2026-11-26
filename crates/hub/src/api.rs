@@ -125,10 +125,16 @@ pub async fn list_servers(State(state): State<S>, user: AuthUser) -> ApiResult<J
     user.require(rbac::SERVERS_VIEW)?;
     let rows = load_agents(&state, None).await?;
     let rules = state.rules.read().unwrap().clone();
+    let overrides = crate::alerts::load_overrides(&state).await;
+    let windows = crate::alerts::active_maintenance(&state).await;
     let list: Vec<Value> = rows
         .iter()
         .filter(|r| user.can_server(&r.id))
-        .map(|r| server_json(r, state.reg.get(&r.id), false, &rules))
+        .map(|r| {
+            let mut v = server_json(r, state.reg.get(&r.id), false, overrides.get(&r.id).unwrap_or(&rules));
+            decorate(&mut v, &r.id, &windows, overrides.contains_key(&r.id));
+            v
+        })
         .collect();
     Ok(Json(Value::Array(list)))
 }
@@ -136,7 +142,20 @@ pub async fn list_servers(State(state): State<S>, user: AuthUser) -> ApiResult<J
 pub async fn get_server(State(state): State<S>, user: AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let row = get_server_row(&state, &user, &id).await?;
     let rules = state.rules.read().unwrap().clone();
-    Ok(Json(server_json(&row, state.reg.get(&id), true, &rules)))
+    let overrides = crate::alerts::load_overrides(&state).await;
+    let windows = crate::alerts::active_maintenance(&state).await;
+    let mut v = server_json(&row, state.reg.get(&id), true, overrides.get(&id).unwrap_or(&rules));
+    decorate(&mut v, &id, &windows, overrides.contains_key(&id));
+    Ok(Json(v))
+}
+
+/// Maintenance, custom-rule and agent-update details added to a server's JSON.
+fn decorate(v: &mut Value, id: &str, windows: &[(Option<String>, i64)], custom_rules: bool) {
+    v["maintenance_until"] = json!(crate::alerts::maintenance_until(windows, id));
+    v["custom_alert_rules"] = json!(custom_rules);
+    v["agent_update"] = crate::updates::status(id);
+    let agent_version = v["hello"]["agent_version"].as_str().unwrap_or("").to_string();
+    v["update_available"] = json!(!agent_version.is_empty() && crate::updates::newer(monitorlab_common::VERSION, &agent_version) && !v["is_local"].as_bool().unwrap_or(false));
 }
 
 #[derive(Deserialize)]
@@ -462,6 +481,8 @@ pub async fn hub_info(State(state): State<S>, user: AuthUser) -> ApiResult<Json<
             "linux_amd64": has("monitorlab-agent-linux-amd64"),
             "linux_arm64": has("monitorlab-agent-linux-arm64"),
             "windows_amd64": has("monitorlab-agent-windows-amd64.exe"),
+            "macos_arm64": has("monitorlab-agent-macos-arm64"),
+            "macos_amd64": has("monitorlab-agent-macos-amd64"),
         }
     })))
 }
@@ -473,7 +494,13 @@ pub async fn download(State(state): State<S>, Path(file): Path<String>) -> Respo
     if file == "install.sh" {
         return ([(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")], INSTALL_SH).into_response();
     }
-    const ALLOWED: &[&str] = &["monitorlab-agent-linux-amd64", "monitorlab-agent-linux-arm64", "monitorlab-agent-windows-amd64.exe"];
+    const ALLOWED: &[&str] = &[
+        "monitorlab-agent-linux-amd64",
+        "monitorlab-agent-linux-arm64",
+        "monitorlab-agent-windows-amd64.exe",
+        "monitorlab-agent-macos-arm64",
+        "monitorlab-agent-macos-amd64",
+    ];
     if !ALLOWED.contains(&file.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }

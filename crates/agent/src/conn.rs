@@ -98,7 +98,7 @@ impl ServerCertVerifier for PinnedVerifier {
     }
 }
 
-fn tls_config(fingerprint: Option<&str>) -> Result<ClientConfig> {
+pub fn tls_config(fingerprint: Option<&str>) -> Result<ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
     let cfg = match fingerprint.filter(|f| !f.trim().is_empty()) {
@@ -160,7 +160,7 @@ pub async fn enroll(hub: &str, token: &str, fingerprint: Option<&str>) -> Result
     let req = EnrollRequest {
         token,
         hostname: sysinfo::System::host_name().unwrap_or_default(),
-        os: if cfg!(windows) { "windows" } else { "linux" },
+        os: if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
         agent_version: monitorlab_common::VERSION,
     };
     ws.send(Message::Text(serde_json::to_string(&req)?.into())).await?;

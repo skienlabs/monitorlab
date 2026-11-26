@@ -3,7 +3,7 @@ import { Ban, CircleCheck, KeyRound, MoreVertical, Pencil, Plus, Trash2, Users, 
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { useServers } from "../servers";
-import { Avatar, CopyButton, Dialog, Empty, Loading, Menu, SearchBox, Spinner, useConfirm, usePoll, useToast } from "../components/ui";
+import { Avatar, CopyButton, Dialog, Empty, Loading, Menu, SearchBox, Spinner, useConfirm, usePoll, useToast, Sorted } from "../components/ui";
 import { ago } from "../format";
 
 interface User {
@@ -207,12 +207,13 @@ export function AdminUsers() {
         {list.length === 0 ? (
           <Empty icon={<Users size={26} />} title="No users match" />
         ) : (
-          <table className="table">
+          <Sorted rows={list} acc={{ name: u => u.name || u.email, role: u => u.role, status: u => u.disabled ? 2 : u.must_change_password ? 1 : 0, login: u => u.last_login_at }}>{(S) => (
+<table className="table">
             <thead>
-              <tr><th>User</th><th>Role</th><th>Server access</th><th>Status</th><th>Last sign-in</th><th /></tr>
+              <tr>{S.th("name", "User")}{S.th("role", "Role")}<th>Server access</th>{S.th("status", "Status")}{S.th("login", "Last sign-in")}<th /></tr>
             </thead>
             <tbody>
-              {list.map((u) => (
+              {S.rows.map((u) => (
                 <tr key={u.id}>
                   <td>
                     <div className="row" style={{ gap: 12 }}>
@@ -265,6 +266,7 @@ export function AdminUsers() {
               ))}
             </tbody>
           </table>
+)}</Sorted>
         )}
       </div>
 

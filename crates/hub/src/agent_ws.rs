@@ -138,6 +138,7 @@ async fn persist_msg(state: &S, agent_id: &str, m: AgentMsg) {
             let id = agent_id.to_string();
             let hello = serde_json::to_string(&h).unwrap_or_default();
             let host = h.hostname.clone();
+            crate::updates::on_hello(state, agent_id, &h);
             let _ = state
                 .db
                 .run(move |c| {
@@ -151,6 +152,9 @@ async fn persist_msg(state: &S, agent_id: &str, m: AgentMsg) {
         }
         AgentMsg::Metrics(m) => {
             let id = agent_id.to_string();
+            if let Err(e) = crate::history::insert(&state.db, &id, &m).await {
+                tracing::warn!("usage history insert failed: {e:#}");
+            }
             if let Err(e) = metrics::insert(&state.db, id.clone(), m).await {
                 tracing::warn!("metrics insert failed: {e:#}");
             }
@@ -270,6 +274,8 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         iis_enabled: Some(false),
         host_root: state.cfg.host_root.clone(),
         k8s: Default::default(),
+        update: None,
+        container_history: true,
     };
     tokio::spawn(async move {
         let agent = monitorlab_agent::Agent::new(opts);

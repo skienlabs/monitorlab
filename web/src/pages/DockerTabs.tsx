@@ -7,7 +7,7 @@ import {
 import { openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Container, Server } from "../types";
-import { Dialog, Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast } from "../components/ui";
+import { Dialog, Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast, Sorted } from "../components/ui";
 import { ago, bytes, plural, shortId } from "../format";
 
 export function Toolbar({ children, onRefresh, loading }: { children?: ReactNode; onRefresh: () => void; loading: boolean }) {
@@ -652,19 +652,20 @@ export function ImagesTab({ s }: { s: Server }) {
       </Toolbar>
       {error && <ErrorBanner error={error} onRetry={reload} />}
       <div className="card table-wrap">
-        <table className="table">
+        <Sorted rows={list} acc={{ tag: i => i.tags[0], id: i => i.id, size: i => i.size, created: i => i.created, used: i => i.used_by.length }}>{(S) => (
+<table className="table">
           <thead>
             <tr>
-              <th>Repository / tag</th>
-              <th>ID</th>
-              <th className="num">Size</th>
-              <th>Created</th>
-              <th>Used by</th>
+              {S.th("tag", "Repository / tag")}
+              {S.th("id", "ID")}
+              {S.th("size", "Size", "num")}
+              {S.th("created", "Created")}
+              {S.th("used", "Used by")}
               <th />
             </tr>
           </thead>
           <tbody>
-            {list.map((i) => (
+            {S.rows.map((i) => (
               <tr key={i.id}>
                 <td>
                   {i.tags.length ? (
@@ -690,6 +691,7 @@ export function ImagesTab({ s }: { s: Server }) {
             ))}
           </tbody>
         </table>
+)}</Sorted>
         {list.length === 0 && <Empty icon={<Layers size={26} />} title="No images match" />}
       </div>
     </div>
@@ -759,19 +761,20 @@ export function VolumesTab({ s }: { s: Server }) {
       </Toolbar>
       {error && <ErrorBanner error={error} onRetry={reload} />}
       <div className="card table-wrap">
-        <table className="table">
+        <Sorted rows={list} acc={{ name: v => v.name, project: v => v.project, driver: v => v.driver, used: v => v.used_by.length, created: v => v.created ? Date.parse(v.created) : null }}>{(S) => (
+<table className="table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Stack</th>
-              <th>Driver</th>
-              <th>Used by</th>
-              <th>Created</th>
+              {S.th("name", "Name")}
+              {S.th("project", "Stack")}
+              {S.th("driver", "Driver")}
+              {S.th("used", "Used by")}
+              {S.th("created", "Created")}
               <th />
             </tr>
           </thead>
           <tbody>
-            {list.map((v) => (
+            {S.rows.map((v) => (
               <tr key={v.name}>
                 <td style={{ maxWidth: 360 }}>
                   <div className="mono small ellipsis" title={v.mountpoint}>{v.anonymous ? shortId(v.name) : v.name}</div>
@@ -808,6 +811,7 @@ export function VolumesTab({ s }: { s: Server }) {
             ))}
           </tbody>
         </table>
+)}</Sorted>
         {list.length === 0 && <Empty icon={<HardDrive size={26} />} title="No volumes" />}
       </div>
     </div>
@@ -858,19 +862,20 @@ export function NetworksTab({ s }: { s: Server }) {
       </Toolbar>
       {error && <ErrorBanner error={error} onRetry={reload} />}
       <div className="card table-wrap">
-        <table className="table">
+        <Sorted rows={(data ?? [])} acc={{ name: n => n.name, driver: n => n.driver, scope: n => n.scope, subnet: n => n.subnets[0], containers: n => n.containers }}>{(S) => (
+<table className="table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Driver</th>
-              <th>Scope</th>
-              <th>Subnet</th>
-              <th className="num">Containers</th>
+              {S.th("name", "Name")}
+              {S.th("driver", "Driver")}
+              {S.th("scope", "Scope")}
+              {S.th("subnet", "Subnet")}
+              {S.th("containers", "Containers", "num")}
               <th />
             </tr>
           </thead>
           <tbody>
-            {(data ?? []).map((n) => (
+            {S.rows.map((n) => (
               <tr key={n.id}>
                 <td>
                   <div className="row">
@@ -910,6 +915,7 @@ export function NetworksTab({ s }: { s: Server }) {
             ))}
           </tbody>
         </table>
+)}</Sorted>
       </div>
     </div>
   );

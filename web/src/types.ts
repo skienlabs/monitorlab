@@ -46,7 +46,7 @@ export interface Metrics {
 export interface Hello {
   agent_version: string;
   hostname: string;
-  os: "linux" | "windows" | "other";
+  os: "linux" | "windows" | "macos" | "other";
   os_name: string;
   os_version: string;
   kernel: string;
@@ -57,7 +57,7 @@ export interface Hello {
   total_memory: number;
   boot_time: number;
   ips: string[];
-  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean; kubernetes?: boolean; kubernetes_version?: string | null };
+  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean; kubernetes?: boolean; kubernetes_version?: string | null; services?: boolean; system_logs?: boolean; self_update?: boolean };
   interval_secs: number;
 }
 
@@ -67,6 +67,10 @@ export interface Server {
   id: string;
   name: string;
   is_local: boolean;
+  maintenance_until?: number | null;
+  custom_alert_rules?: boolean;
+  update_available?: boolean;
+  agent_update?: { at: number; ok: boolean; message: string } | null;
   enrolled: boolean;
   token_pending: boolean;
   online: boolean;
@@ -103,4 +107,6 @@ export interface LogLine {
   ts?: string;
   s: number;
   text: string;
+  src?: string;
+  lvl?: number;
 }

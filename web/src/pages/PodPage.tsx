@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronRight, FileText, Info, SquareTerminal, Trash2 } from "lucide-react";
+import { ChevronRight, FileText, Gauge, Info, SquareTerminal, Trash2 } from "lucide-react";
+import { UsageHistory } from "../components/UsageHistory";
+import { bytes } from "../format";
 import { api, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Server } from "../types";
@@ -8,9 +10,60 @@ import { CodeBlock, Empty, ErrorBanner, Loading, useConfirm, usePoll } from "../
 import { LogViewer } from "../components/LogViewer";
 import { PodTerminal } from "../components/Terminal";
 import { ago, dateTime } from "../format";
-import { PodStatus } from "./K8sTab";
+import { cores, PodStatus, UsageCell } from "./K8sTab";
+
+/** CPU/memory of each container against its requests and limits, plus history. */
+function Usage({ serverId, ns, pod, d }: { serverId: string; ns: string; pod: string; d: PodDetail }) {
+  const q = (v: string | undefined, cpu: boolean) => {
+    if (!v) return 0;
+    if (cpu) return v.endsWith("m") ? parseFloat(v) : parseFloat(v) * 1000;
+    const units: Record<string, number> = { Ki: 1024, Mi: 1048576, Gi: 1073741824, Ti: 1099511627776, k: 1e3, M: 1e6, G: 1e9, T: 1e12 };
+    const m = v.match(/^([\d.]+)([A-Za-z]*)$/);
+    return m ? parseFloat(m[1]) * (units[m[2]] ?? 1) : 0;
+  };
+  const specs: any[] = d.object.spec?.containers ?? [];
+  const rows = specs.map((c) => {
+    const u = d.usage?.find((x) => x.name === c.name);
+    const r = c.resources ?? {};
+    return {
+      name: c.name,
+      cpu: u?.cpu ?? null,
+      mem: u?.mem ?? null,
+      cpu_req: q(r.requests?.cpu, true),
+      cpu_lim: q(r.limits?.cpu, true),
+      mem_req: q(r.requests?.memory, false),
+      mem_lim: q(r.limits?.memory, false),
+    };
+  });
+  const sum = (k: keyof (typeof rows)[number]) => rows.reduce((a, r) => a + ((r[k] as number) || 0), 0);
+  return (
+    <div className="col" style={{ gap: 16 }}>
+      <div className="card table-wrap">
+        <div className="card-head"><h3>Right now</h3></div>
+        {d.usage == null && <div className="card-body small muted">No live usage: metrics-server is not installed or has no data for this pod yet.</div>}
+        <table className="table">
+          <thead><tr><th>Container</th><th className="num">CPU</th><th className="num">CPU request / limit</th><th className="num">Memory</th><th className="num">Memory request / limit</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}>
+                <td style={{ fontWeight: 500 }}>{r.name}</td>
+                <td className="num tnum small"><UsageCell used={r.cpu} req={r.cpu_req} lim={r.cpu_lim} fmt={cores} /></td>
+                <td className="num tnum small faint">{r.cpu_req ? cores(r.cpu_req) : "none"} / {r.cpu_lim ? cores(r.cpu_lim) : "none"}</td>
+                <td className="num tnum small"><UsageCell used={r.mem} req={r.mem_req} lim={r.mem_lim} fmt={(v) => bytes(v)} /></td>
+                <td className="num tnum small faint">{r.mem_req ? bytes(r.mem_req) : "none"} / {r.mem_lim ? bytes(r.mem_lim) : "none"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {rows.some((r) => !r.mem_lim) && <div className="card-body small faint">Containers without a memory limit can use all of the node's memory.</div>}
+      </div>
+      <UsageHistory serverId={serverId} kind="pod" name={`${ns}/${pod}`} limits={{ cpu_req: sum("cpu_req"), cpu_lim: sum("cpu_lim"), mem_req: sum("mem_req"), mem_lim: sum("mem_lim") }} />
+    </div>
+  );
+}
 
 interface PodDetail {
+  usage: { name: string; cpu: number; mem: number }[] | null;
   object: any;
   events: { type: string; reason: string; message: string; count: number; last: number }[];
 }
@@ -131,6 +184,7 @@ export function PodPage() {
   const tabs = [
     { key: "logs", label: "Logs", icon: <FileText size={17} />, show: can("logs.view") },
     { key: "terminal", label: "Terminal", icon: <SquareTerminal size={17} />, show: can("k8s.exec") },
+    { key: "usage", label: "Usage", icon: <Gauge size={17} />, show: true },
     { key: "details", label: "Details", icon: <Info size={17} />, show: true },
   ].filter((t) => t.show);
   const tab = tabs.some((t) => t.key === params.get("tab")) ? params.get("tab")! : tabs[0].key;
@@ -227,6 +281,7 @@ export function PodPage() {
       )}
       {tab === "terminal" &&
         (running ? <PodTerminal serverId={serverId} namespace={ns} pod={pod} containers={containers} /> : <Empty icon={<SquareTerminal size={26} />} title="Pod is not running" />)}
+      {tab === "usage" && <Usage serverId={serverId} ns={ns} pod={pod} d={d} />}
       {tab === "details" && <Details d={d} />}
     </div>
   );

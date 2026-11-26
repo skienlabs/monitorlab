@@ -213,6 +213,9 @@ impl Collector {
             mssql: None,
             iis: None,
             k8s: None,
+            containers: Vec::new(),
+            pods: Vec::new(),
+            failed_services: None,
         }
     }
 
@@ -325,6 +328,8 @@ impl Collector {
                 OsFamily::Windows
             } else if cfg!(target_os = "linux") {
                 OsFamily::Linux
+            } else if cfg!(target_os = "macos") {
+                OsFamily::MacOs
             } else {
                 OsFamily::Other
             },

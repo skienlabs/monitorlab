@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { BellRing, Mail, MessageSquare, Pencil, Plus, Send, Trash2, Webhook } from "lucide-react";
+import { BellRing, Mail, MessageSquare, Pencil, Plus, Send, Trash2, Webhook, Wrench } from "lucide-react";
+import { useAuth } from "../auth";
 import { api } from "../api";
 import { Dialog, ErrorBanner, Loading, Spinner, useConfirm, usePoll, useToast } from "../components/ui";
-import { ago } from "../format";
+import { ago, dateTime } from "../format";
 import { useBrand } from "../brand";
 
 interface Threshold {
@@ -20,6 +21,8 @@ interface Rules {
   mssql_stopped: boolean;
   iis_stopped: boolean;
   k8s_problems: boolean;
+  failed_services?: boolean;
+  repeat_minutes?: number;
 }
 interface Channel {
   id: number;
@@ -70,30 +73,52 @@ function ThresholdRow({ title, t, onChange, durationNote }: { title: string; t: 
   );
 }
 
-function RulesCard() {
+/** Rule editor; global (`serverId` unset) or a server's own rules. */
+export function RulesCard({ serverId }: { serverId?: string }) {
   const toast = useToast();
-  const { data, error, reload } = usePoll(() => api<Rules>("/alert-rules"), []);
+  const confirm = useConfirm();
+  const url = serverId ? `/servers/${serverId}/alert-rules` : "/alert-rules";
+  const { data, error, reload } = usePoll(
+    () => (serverId ? api<{ custom: boolean; rules: Rules }>(url) : api<Rules>(url).then((rules) => ({ custom: true, rules }))),
+    [url],
+  );
   const [r, setR] = useState<Rules | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setR(data), [data]);
+  useEffect(() => setR(data?.rules ?? null), [data]);
   if (error) return <ErrorBanner error={error} onRetry={reload} />;
-  if (!r) return <Loading />;
+  if (!r || !data) return <Loading />;
+  const custom = data.custom;
   const save = async () => {
     setBusy(true);
     try {
-      await api("/alert-rules", { method: "PUT", body: r });
-      toast("Alert rules saved");
+      await api(url, { method: "PUT", body: r });
+      toast(serverId ? "Rules for this server saved" : "Alert rules saved");
+      reload();
     } catch (e: any) {
       toast(e.message, true);
     } finally {
       setBusy(false);
     }
   };
+  if (serverId && !custom) {
+    return (
+      <div className="card card-pad row wrap" style={{ gap: 12 }}>
+        <BellRing size={20} />
+        <div className="grow">
+          <b>This server uses the global alert rules.</b>
+          <div className="small muted">Give it its own thresholds, e.g. a build server that may run at 100% CPU, or a database server with tighter disk limits.</div>
+        </div>
+        <button className="btn tonal" onClick={() => api(url, { method: "PUT", body: r }).then(reload).catch((e) => toast(e.message, true))}>
+          Customise for this server
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="card card-pad col" style={{ gap: 20 }}>
-      <div className="row">
+      <div className="row wrap">
         <BellRing size={20} />
-        <h2 className="grow">Rules</h2>
+        <h2 className="grow">{serverId ? "Rules for this server" : "Rules"}</h2>
         <label className="check">
           <input type="checkbox" checked={r.enabled} onChange={(e) => setR({ ...r, enabled: e.target.checked })} /> Alerting enabled
         </label>
@@ -108,10 +133,151 @@ function RulesCard() {
         <label className="check"><input type="checkbox" checked={r.mssql_stopped} onChange={(e) => setR({ ...r, mssql_stopped: e.target.checked })} /> SQL Server instance stopped (critical)</label>
         <label className="check"><input type="checkbox" checked={r.iis_stopped} onChange={(e) => setR({ ...r, iis_stopped: e.target.checked })} /> IIS site or application pool stopped (warning)</label>
         <label className="check"><input type="checkbox" checked={r.k8s_problems ?? true} onChange={(e) => setR({ ...r, k8s_problems: e.target.checked })} /> Kubernetes: node not ready (critical), failing pods or degraded workloads (warning)</label>
+        <label className="check"><input type="checkbox" checked={r.failed_services ?? true} onChange={(e) => setR({ ...r, failed_services: e.target.checked })} /> Failed systemd services / Windows services stopped with an error (warning)</label>
       </div>
-      <div className="row" style={{ justifyContent: "flex-end" }}>
+      <div className="col" style={{ gap: 10 }}>
+        <h3>Reminders</h3>
+        <label className="check">
+          <input type="checkbox" checked={(r.repeat_minutes ?? 0) > 0} onChange={(e) => setR({ ...r, repeat_minutes: e.target.checked ? 60 : 0 })} /> Repeat notifications for alerts that are still firing and not acknowledged
+        </label>
+        {(r.repeat_minutes ?? 0) > 0 && (
+          <Num label="Repeat every" value={r.repeat_minutes ?? 60} onChange={(v) => setR({ ...r, repeat_minutes: v })} suffix="minutes" min={5} max={10080} />
+        )}
+      </div>
+      <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+        {serverId && (
+          <button
+            className="btn"
+            onClick={() => confirm({ title: "Use the global rules again?", body: "This server's own thresholds are removed.", confirm: "Use global rules", action: () => api(url, { method: "DELETE" }).then(reload), success: "This server follows the global rules again" })}
+          >
+            Use global rules
+          </button>
+        )}
         <button className="btn filled" onClick={save} disabled={busy}>{busy && <Spinner />} Save rules</button>
       </div>
+    </div>
+  );
+}
+
+interface Window {
+  id: number;
+  target: string | null;
+  target_name: string | null;
+  starts_at: number;
+  ends_at: number;
+  reason: string;
+  created_by: string;
+}
+
+/** Maintenance windows: alerts are still recorded but nobody is notified. */
+export function MaintenanceCard({ target }: { target?: string }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { can } = useAuth();
+  const { data, reload } = usePoll(() => api<Window[]>("/maintenance"), [], 30_000);
+  const servers = usePoll(() => (target ? Promise.resolve([]) : api<{ id: string; name: string }[]>("/servers")), [target]);
+  const monitors = usePoll(() => (target ? Promise.resolve([]) : api<{ id: number; name: string }[]>("/monitors")), [target]);
+  const [open, setOpen] = useState(false);
+  const [who, setWho] = useState<string>(target ?? "");
+  const [hours, setHours] = useState("1");
+  const [until, setUntil] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const now = Date.now();
+  const list = (data ?? []).filter((w) => !target || w.target === target || w.target === null);
+  const create = async () => {
+    const ends = hours === "custom" ? new Date(until).getTime() : now + Number(hours) * 3_600_000;
+    if (!ends || Number.isNaN(ends)) return toast("Pick when the window ends", true);
+    setBusy(true);
+    try {
+      await api("/maintenance", { method: "POST", body: { target: who || null, ends_at: ends, reason } });
+      toast("Maintenance window started — notifications are paused");
+      setOpen(false);
+      setReason("");
+      reload();
+    } catch (e: any) {
+      toast(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card card-pad col" style={{ gap: 14 }}>
+      <div className="row wrap">
+        <Wrench size={20} />
+        <div className="grow">
+          <h2 style={{ margin: 0 }}>Maintenance windows</h2>
+          <div className="small muted">During a window, alerts are still recorded but no notifications are sent.</div>
+        </div>
+        {can("alerts.manage") && !open && (
+          <button className="btn tonal" onClick={() => setOpen(true)}>
+            <Plus size={16} /> {target ? "Pause notifications" : "New window"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="form-grid" style={{ background: "var(--surface-2)", padding: 14, borderRadius: 12 }}>
+          {!target && (
+            <div className="field">
+              <label>Applies to</label>
+              <select className="select" value={who} onChange={(e) => setWho(e.target.value)}>
+                <option value="">Everything (all servers and monitors)</option>
+                {(servers.data ?? []).map((s) => <option key={s.id} value={s.id}>Server: {s.name}</option>)}
+                {(monitors.data ?? []).map((m) => <option key={m.id} value={`monitor:${m.id}`}>Monitor: {m.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="field">
+            <label>For</label>
+            <select className="select" value={hours} onChange={(e) => setHours(e.target.value)}>
+              <option value="0.5">30 minutes</option>
+              <option value="1">1 hour</option>
+              <option value="2">2 hours</option>
+              <option value="4">4 hours</option>
+              <option value="8">8 hours</option>
+              <option value="24">24 hours</option>
+              <option value="custom">Until…</option>
+            </select>
+          </div>
+          {hours === "custom" && (
+            <div className="field">
+              <label>Ends at</label>
+              <input className="input" type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+            </div>
+          )}
+          <div className="field">
+            <label>Reason (optional)</label>
+            <input className="input" maxLength={200} value={reason} placeholder="e.g. OS patching" onChange={(e) => setReason(e.target.value)} />
+          </div>
+          <div className="row" style={{ gridColumn: "1 / -1", justifyContent: "flex-end", gap: 8 }}>
+            <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+            <button className="btn filled" onClick={create} disabled={busy}>{busy && <Spinner />} Start window</button>
+          </div>
+        </div>
+      )}
+      {list.length === 0 && !open && <div className="small muted">No maintenance windows planned.</div>}
+      {list.map((w) => {
+        const active = w.starts_at <= now && w.ends_at > now;
+        return (
+          <div key={w.id} className="row wrap small" style={{ gap: 10, padding: "8px 0", borderTop: "1px solid var(--outline-soft)" }}>
+            <span className={`chip ${active ? "warn" : "outline"}`}>{active ? "Active" : "Planned"}</span>
+            <b>{w.target === null ? "Everything" : w.target_name ?? w.target}</b>
+            <span className="muted">
+              {active ? `until ${dateTime(w.ends_at)}` : `${dateTime(w.starts_at)} → ${dateTime(w.ends_at)}`}
+              {w.reason ? ` · ${w.reason}` : ""} · by {w.created_by}
+            </span>
+            <span className="spacer" />
+            {can("alerts.manage") && (
+              <button
+                className="btn sm"
+                onClick={() => confirm({ title: active ? "End this window now?" : "Cancel this window?", body: "Notifications resume immediately.", confirm: active ? "End now" : "Cancel window", action: () => api(`/maintenance/${w.id}`, { method: "DELETE" }).then(reload), success: "Notifications resumed" })}
+              >
+                {active ? "End now" : "Cancel"}
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -355,13 +521,14 @@ export function AlertSettings() {
       <div className="page-head">
         <div className="grow">
           <h1>Alert settings</h1>
-          <div className="sub">Thresholds apply to every server. CPU and memory must stay above the limit for the whole duration, so short spikes are ignored.</div>
+          <div className="sub">These thresholds apply to every server unless a server has its own rules (server page → Alerts). CPU and memory must stay above the limit for the whole duration, so short spikes are ignored.</div>
         </div>
       </div>
       <div className="col" style={{ gap: 16 }}>
         <ChannelsCard />
         <SmtpCard />
         <RulesCard />
+        <MaintenanceCard />
       </div>
     </div>
   );

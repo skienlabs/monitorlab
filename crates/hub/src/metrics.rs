@@ -120,6 +120,18 @@ pub async fn maintenance_loop(db: Db, raw_days: u32, days: u32) {
         if let Err(e) = maintenance(&db, raw_days, days).await {
             tracing::warn!("metrics maintenance failed: {e:#}");
         }
+        if let Err(e) = crate::history::maintenance(&db).await {
+            tracing::warn!("usage history maintenance failed: {e:#}");
+        }
+        let cut = now_ms() - 90 * 86_400_000;
+        let mcut = now_ms() - 7 * 86_400_000;
+        let _ = db
+            .run(move |c| {
+                c.execute("DELETE FROM monitor_results WHERE ts < ?1", [cut])?;
+                c.execute("DELETE FROM maintenance WHERE ends_at < ?1", [mcut])?;
+                Ok(())
+            })
+            .await;
     }
 }
 

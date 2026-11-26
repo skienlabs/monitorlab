@@ -68,6 +68,8 @@ pub enum HubMsg {
 pub enum OsFamily {
     Linux,
     Windows,
+    #[serde(rename = "macos")]
+    MacOs,
     Other,
 }
 
@@ -83,6 +85,15 @@ pub struct Capabilities {
     pub kubernetes: bool,
     #[serde(default)]
     pub kubernetes_version: Option<String>,
+    /// systemd (Linux) or the Service Control Manager (Windows) can be queried.
+    #[serde(default)]
+    pub services: bool,
+    /// journald (Linux) or Windows Event Log readable.
+    #[serde(default)]
+    pub system_logs: bool,
+    /// The agent can replace its own binary when the hub asks.
+    #[serde(default)]
+    pub self_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +154,39 @@ pub struct MetricsSample {
     pub iis: Option<IisSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k8s: Option<K8sSummary>,
+    /// Per-container usage (sent about every 30 s; empty otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub containers: Vec<ContainerUsage>,
+    /// Per-pod usage from metrics-server (sent about every 60 s; empty otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pods: Vec<PodUsage>,
+    /// systemd units in the failed state / automatic Windows services that are stopped.
+    /// `None` = not checked in this sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_services: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContainerUsage {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub project: Option<String>,
+    /// 100 = one core (docker stats convention).
+    pub cpu: f64,
+    pub mem: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PodUsage {
+    pub ns: String,
+    pub name: String,
+    /// Owning workload (Deployment / StatefulSet / DaemonSet / Job name), when known.
+    #[serde(default)]
+    pub owner: String,
+    /// Millicores.
+    pub cpu: f64,
+    pub mem: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -224,6 +268,29 @@ pub enum ContainerAction {
     Pause,
     Unpause,
     Kill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceActionKind {
+    Start,
+    Stop,
+    Restart,
+    Reload,
+    Enable,
+    Disable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackAction {
+    Start,
+    Stop,
+    Restart,
+    /// Pull every service's image and recreate the containers (compose pull + up -d).
+    PullRedeploy,
+    /// Recreate without pulling.
+    Redeploy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +393,26 @@ pub enum Request {
     K8sRolloutRestart { kind: K8sKind, namespace: String, name: String },
     K8sScale { kind: K8sKind, namespace: String, name: String, replicas: u32 },
     K8sNodeCordon { name: String, unschedulable: bool },
+    /// Other resource lists: jobs, cronjobs, ingresses, pvcs, configmaps, secrets (names only).
+    K8sResources {
+        resource: String,
+        #[serde(default)]
+        namespace: Option<String>,
+    },
+    /// Node with its pods and allocated requests / limits.
+    K8sNodeDetail { name: String },
+    /// Requests, limits and usage per namespace.
+    K8sNamespaceUsage,
+    K8sCronJobTrigger { namespace: String, name: String },
+    /// Services: systemd units (Linux) or Windows services.
+    ServicesList,
+    ServiceAction { name: String, action: ServiceActionKind },
+    /// Docker compose stacks (from container labels).
+    DockerStacks,
+    DockerStackFile { project: String },
+    DockerStackAction { project: String, action: StackAction },
+    /// Download the agent binary `file` from the hub, verify it and restart into it.
+    SelfUpdate { file: String, sha256: String, version: String },
     DockerImages,
     DockerImageRemove {
         id: String,
@@ -383,6 +470,16 @@ impl Request {
             Request::K8sRolloutRestart { .. } => "k8s_rollout_restart",
             Request::K8sScale { .. } => "k8s_scale",
             Request::K8sNodeCordon { .. } => "k8s_node_cordon",
+            Request::K8sResources { .. } => "k8s_resources",
+            Request::K8sNodeDetail { .. } => "k8s_node_detail",
+            Request::K8sNamespaceUsage => "k8s_namespace_usage",
+            Request::K8sCronJobTrigger { .. } => "k8s_cronjob_trigger",
+            Request::ServicesList => "services_list",
+            Request::ServiceAction { .. } => "service_action",
+            Request::DockerStacks => "docker_stacks",
+            Request::DockerStackFile { .. } => "docker_stack_file",
+            Request::DockerStackAction { .. } => "docker_stack_action",
+            Request::SelfUpdate { .. } => "self_update",
             Request::DockerImages => "docker_images",
             Request::DockerImageRemove { .. } => "docker_image_remove",
             Request::DockerVolumes => "docker_volumes",
@@ -467,6 +564,30 @@ pub enum StreamRequest {
         #[serde(default)]
         previous: bool,
     },
+    /// All containers of a compose stack merged into one log (lines carry `src`).
+    StackLogs {
+        project: String,
+        #[serde(default = "default_tail")]
+        tail: u32,
+        #[serde(default)]
+        since: Option<i64>,
+    },
+    /// journald (Linux; `unit` optional) or a Windows Event Log (`log`, default System).
+    SystemLogs {
+        #[serde(default)]
+        unit: Option<String>,
+        #[serde(default)]
+        log: Option<String>,
+        /// Show entries at this priority or more severe (0–7); None = all.
+        #[serde(default)]
+        priority: Option<u8>,
+        #[serde(default = "default_tail")]
+        tail: u32,
+        #[serde(default)]
+        since: Option<i64>,
+        #[serde(default = "default_true")]
+        follow: bool,
+    },
     K8sPodExec {
         namespace: String,
         name: String,
@@ -505,6 +626,8 @@ impl StreamRequest {
             StreamRequest::ContainerStatsAll { .. } => "container_stats_all",
             StreamRequest::K8sPodLogs { .. } => "k8s_pod_logs",
             StreamRequest::K8sPodExec { .. } => "k8s_pod_exec",
+            StreamRequest::StackLogs { .. } => "stack_logs",
+            StreamRequest::SystemLogs { .. } => "system_logs",
             StreamRequest::SystemLive { .. } => "system_live",
             StreamRequest::IisLogFollow { .. } => "iis_log_follow",
             StreamRequest::MssqlLogFollow { .. } => "mssql_log_follow",
@@ -512,7 +635,7 @@ impl StreamRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct LogLine {
     /// RFC3339 timestamp as produced by the source, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +643,12 @@ pub struct LogLine {
     /// 1 = stdout, 2 = stderr, 0 = unknown/file.
     pub s: u8,
     pub text: String,
+    /// Source of the line in merged views (container name in a stack, unit in the journal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+    /// Severity given by the source (journald priority / Event Log level): 0 emerg … 7 debug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lvl: Option<u8>,
 }
 
 /// Compact per-container sample for the containers list.
@@ -580,7 +709,7 @@ mod tests {
 
     #[test]
     fn agent_msgs() {
-        let m = AgentMsg::Stream { sid: 1, data: StreamData::Lines { lines: vec![LogLine { ts: None, s: 1, text: "hi".into() }] } };
+        let m = AgentMsg::Stream { sid: 1, data: StreamData::Lines { lines: vec![LogLine { ts: None, s: 1, text: "hi".into(), ..Default::default() }] } };
         let s = serde_json::to_string(&m).unwrap();
         let _: AgentMsg = serde_json::from_str(&s).unwrap();
         let m = AgentMsg::Metrics(MetricsSample::default());

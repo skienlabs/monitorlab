@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { KeyRound, MoreVertical, Pencil, Plus, ServerCog, Trash2 } from "lucide-react";
+import { CloudDownload, KeyRound, MoreVertical, Pencil, Plus, ServerCog, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useServers } from "../servers";
-import { CodeBlock, Dialog, Empty, Loading, Menu, Seg, Spinner, StatusChip, useConfirm, usePoll, useToast } from "../components/ui";
+import { CodeBlock, Dialog, Empty, Loading, Menu, Seg, Spinner, StatusChip, useConfirm, usePoll, useToast, Sorted } from "../components/ui";
 import { OsIcon } from "../components/OsIcon";
 import { ago, dateTime } from "../format";
 import type { Server } from "../types";
@@ -15,7 +15,7 @@ interface HubInfo {
   fingerprint: string | null;
   spki_pin: string | null;
   public_url: string | null;
-  downloads: { linux_amd64: boolean; linux_arm64: boolean; windows_amd64: boolean };
+  downloads: { linux_amd64: boolean; linux_arm64: boolean; windows_amd64: boolean; macos_arm64?: boolean; macos_amd64?: boolean };
 }
 interface Token {
   id: string;
@@ -25,20 +25,29 @@ interface Token {
 }
 
 function InstallSteps({ t, info }: { t: Token; info: HubInfo }) {
-  const [os, setOs] = useState<"linux" | "windows">("linux");
+  const [os, setOs] = useState<"linux" | "macos" | "windows">("linux");
   const hub = (info.public_url || location.origin).replace(/\/$/, "");
   const fp = info.self_signed ? info.fingerprint : null;
   const pin = info.self_signed ? info.spki_pin : null;
   const linux =
     `curl -fsSL ${pin ? `-k --pinnedpubkey '${pin}' ` : ""}${hub}/download/install.sh | sudo sh -s -- \\\n` +
-    `  --hub ${hub} --token ${t.token}${fp ? ` \\\n  --fingerprint ${fp}` : ""}${pin ? ` \\\n  --pin '${pin}'` : ""}`;
-  const win = `.\\monitorlab-agent-windows-amd64.exe install --hub ${hub} --token ${t.token}${fp ? ` \`\n  --fingerprint ${fp}` : ""}`;
+    `  --hub ${hub} --token=${t.token}${fp ? ` \\\n  --fingerprint ${fp}` : ""}${pin ? ` \\\n  --pin '${pin}'` : ""}`;
+  const win = `.\\monitorlab-agent-windows-amd64.exe install --hub ${hub} --token=${t.token}${fp ? ` \`\n  --fingerprint ${fp}` : ""}`;
   const local = !info.public_url && /^(localhost|127\.|\[::1\])/.test(location.hostname);
   return (
     <div className="col" style={{ gap: 14 }}>
       {local && <div className="banner warn small">You are using the hub via {location.host}. Other servers cannot reach that address — set MONITORLAB_PUBLIC_URL on the hub, or open the hub by its network address.</div>}
-      <Seg value={os} onChange={setOs} options={[{ value: "linux", label: "Linux (systemd)" }, { value: "windows", label: "Windows Server" }]} />
-      {os === "linux" ? (
+      <Seg value={os} onChange={setOs} options={[{ value: "linux", label: "Linux (systemd)" }, { value: "macos", label: "macOS" }, { value: "windows", label: "Windows Server" }]} />
+      {os === "macos" ? (
+        <>
+          <div className="small">
+            Run in Terminal on the Mac (Apple Silicon or Intel). It downloads the right agent from this hub, enrolls it and installs a <span className="mono">launchd</span> service that starts at boot and restarts itself.
+          </div>
+          <CodeBlock>{linux}</CodeBlock>
+          {!info.downloads.macos_arm64 && !info.downloads.macos_amd64 && <div className="banner warn small">This hub does not bundle the macOS agent yet. It is added by the release build.</div>}
+          <div className="small muted">Shows CPU, memory, disks, processes and Docker containers (Docker Desktop, OrbStack or Colima). Services and system logs are not available on macOS yet.</div>
+        </>
+      ) : os === "linux" ? (
         <>
           <div className="small">Run on the server you want to monitor. It downloads the agent from this hub{pin ? " (certificate-pinned)" : ""}, enrolls it and installs a systemd service that runs as an unprivileged <span className="mono">monitorlab</span> user with Docker access.</div>
           <CodeBlock>{linux}</CodeBlock>
@@ -80,6 +89,14 @@ export function AdminServers() {
   const [newName, setNewName] = useState("");
   const toast = useToast();
   const confirm = useConfirm();
+  const updates = usePoll(() => api<{ auto_update: boolean; hub_version: string }>("/agent-updates"), []);
+  const updateAgent = (s: Server) =>
+    confirm({
+      title: `Update the agent on ${s.name}?`,
+      body: `The agent downloads v${updates.data?.hub_version ?? "latest"} from this hub, checks it and restarts. Monitoring pauses for a few seconds.`,
+      confirm: "Update",
+      action: () => api<{ message: string }>(`/servers/${s.id}/update`, { method: "POST" }).then((r) => { toast(r.message); reload(); }),
+    });
 
   useEffect(() => {
     if (params.get("add")) {
@@ -143,23 +160,43 @@ export function AdminServers() {
         </button>
       </div>
 
+      {updates.data && (
+        <div className="card card-pad row wrap" style={{ marginBottom: 16, gap: 12 }}>
+          <CloudDownload size={20} />
+          <div className="grow">
+            <b>Agent updates</b>
+            <div className="small muted">
+              Hub version {updates.data.hub_version}. {updates.data.auto_update ? "Agents update themselves to this version when they connect." : "Agents are only updated when you click Update."} Agents older than 1.3 need the installer run once.
+            </div>
+          </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={updates.data.auto_update}
+              onChange={(e) => api("/agent-updates", { method: "PUT", body: { auto_update: e.target.checked } }).then(updates.reload).catch((err) => toast(err.message, true))}
+            />{" "}
+            Update agents automatically
+          </label>
+        </div>
+      )}
       <div className="card table-wrap">
         {servers.length === 0 ? (
           <Empty icon={<ServerCog size={26} />} title="No servers yet" />
         ) : (
-          <table className="table">
+          <Sorted rows={servers} acc={{ name: s => s.name, status: s => s.online ? 1 : 0, agent: s => s.hello?.agent_version, address: s => s.remote, seen: s => s.last_seen_at }}>{(S) => (
+<table className="table">
             <thead>
               <tr>
-                <th>Server</th>
-                <th>Status</th>
-                <th>Agent</th>
-                <th>Address</th>
-                <th>Last seen</th>
+                {S.th("name", "Server")}
+                {S.th("status", "Status")}
+                {S.th("agent", "Agent")}
+                {S.th("address", "Address")}
+                {S.th("seen", "Last seen")}
                 <th />
               </tr>
             </thead>
             <tbody>
-              {servers.map((s) => (
+              {S.rows.map((s) => (
                 <tr key={s.id}>
                   <td>
                     <div className="row" style={{ gap: 12 }}>
@@ -174,7 +211,21 @@ export function AdminServers() {
                     <StatusChip status={s.status} />
                     {!s.enrolled && s.token_pending && <div className="small faint" style={{ marginTop: 2 }}>token issued</div>}
                   </td>
-                  <td className="small">{s.hello ? `v${s.hello.agent_version}` : "—"}</td>
+                  <td className="small">
+                    {s.hello ? `v${s.hello.agent_version}` : "—"}
+                    {s.update_available && (
+                      <div>
+                        {s.hello?.capabilities.self_update ? (
+                          <button className="btn sm tonal" style={{ marginTop: 4 }} onClick={() => updateAgent(s)}>
+                            <CloudDownload size={14} /> Update
+                          </button>
+                        ) : (
+                          <span className="chip warn" title="This agent predates self-update: re-run the installer on the server once (Add server → copy the command)">reinstall to update</span>
+                        )}
+                      </div>
+                    )}
+                    {s.agent_update && !s.agent_update.ok && <div className="small" style={{ color: "var(--crit-text)", maxWidth: 220 }} title={s.agent_update.message}>Update failed: {s.agent_update.message}</div>}
+                  </td>
                   <td className="mono small">{s.is_local ? "local" : s.remote ?? s.hello?.ips[0] ?? "—"}</td>
                   <td className="small muted">{s.online ? "now" : ago(s.last_seen_at)}</td>
                   <td className="actions">
@@ -219,6 +270,7 @@ export function AdminServers() {
               ))}
             </tbody>
           </table>
+)}</Sorted>
         )}
       </div>
 

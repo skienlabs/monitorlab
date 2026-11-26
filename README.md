@@ -233,6 +233,19 @@ The agent finds the cluster by itself: `kubernetes.kubeconfig`, then `KUBECONFIG
 
 CPU and memory figures come from metrics-server, which k3s installs by default. Credential plugins (`exec:` users, as used by EKS/GKE) aren't supported; use a service-account token or client certificate instead.
 
+## What is new in 1.3
+
+- **Kubernetes in depth**: per-pod and per-namespace CPU and memory with requests and limits, OOMKilled markers, node pages, jobs and CronJobs (with "run now"), ingresses, volume claims, config maps and secrets (names only, never values), and usage history per workload and pod.
+- **Compose stacks**: start, stop, restart, redeploy or pull-and-redeploy a whole stack, view its compose file, and read all of its logs merged in one view.
+- **Services and logs**: systemd units and journald on Linux, Windows services and the Event Log (Windows paths are compile-checked, not run in CI). The agent gets a polkit rule at install time to manage units. Permissions: `services.view`, `services.control`.
+- **Per-container history**: CPU and memory over days (raw 3 days, 15-minute rollups for 30 days).
+- **Alerts**: per-server thresholds, maintenance windows that mute alerts, repeat reminders, failed-service alerts.
+- **Uptime**: HTTP and TCP monitors with keyword checks, response time, uptime percentages and SSL certificate expiry warnings.
+- **Agent self-update**: the hub can update agents (button, or automatically). Agents older than 1.3 need the installer run once. Linux installs keep the binary in `/opt/monitorlab/bin`.
+- **macOS agent**: `curl ... install.sh | sudo sh` works on a Mac (launchd service, Docker Desktop / OrbStack / Colima sockets). The macOS binaries are built on a GitHub macOS runner; a failure there does not block a deploy.
+- **Install as an app**: the console is a progressive web app. Use the install button in the header (Chrome/Edge) or Add to Home Screen / Add to Dock (Safari).
+- **Sorting**: click any column header on list screens to sort ascending, descending, or back to the default.
+
 ## Testing
 
 ```bash
@@ -252,7 +265,7 @@ pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 123 checks (149 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 144 checks (170 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 

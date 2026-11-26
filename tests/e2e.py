@@ -129,6 +129,94 @@ class Hook(BaseHTTPRequestHandler):
         pass
 
 
+def v13_checks(hub, admin, sid):
+    import http.server, threading, socket, time as _t
+    import requests as rq
+
+    # Installable web app files are public and served with the right types.
+    r = rq.get(hub + "/manifest.webmanifest", verify=False)
+    check("web app manifest served", r.status_code == 200 and "manifest+json" in r.headers.get("content-type", "") and r.json().get("display") == "standalone", (r.status_code, r.headers.get("content-type")))
+    r = rq.get(hub + "/sw.js", verify=False)
+    check("service worker served as javascript", r.status_code == 200 and "javascript" in r.headers.get("content-type", ""), r.headers.get("content-type"))
+    r = rq.get(hub + "/icon-512.png", verify=False)
+    check("app icon served", r.status_code == 200 and r.content[:4] == b"\x89PNG", r.status_code)
+
+    # Uptime monitors against a local HTTP server.
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/down":
+                self.send_response(500); self.end_headers(); return
+            body = b"hello monitorlab"
+            self.send_response(200); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        def log_message(self, *a): pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    ids = []
+    try:
+        code, d = admin.post("/monitors/test", {"name": "t", "kind": "http", "target": f"http://127.0.0.1:{port}/", "keyword": "hello monitorlab"})
+        check("monitor test-run passes", code == 200 and d.get("ok") is True, (code, d))
+        code, d = admin.post("/monitors/test", {"name": "t", "kind": "http", "target": f"http://127.0.0.1:{port}/", "keyword": "absent-word"})
+        check("monitor keyword mismatch fails", code == 200 and d.get("ok") is False, (code, d))
+        code, up = admin.post("/monitors", {"name": "e2e-up", "kind": "http", "target": f"http://127.0.0.1:{port}/", "interval_secs": 20, "fail_threshold": 1})
+        check("create monitor", code in (200, 201) and up.get("id"), (code, up))
+        ids.append(up.get("id"))
+        code, dn = admin.post("/monitors", {"name": "e2e-down", "kind": "http", "target": f"http://127.0.0.1:{port}/down", "interval_secs": 20, "fail_threshold": 1})
+        ids.append(dn.get("id"))
+        code, tcp = admin.post("/monitors", {"name": "e2e-tcp", "kind": "tcp", "target": f"127.0.0.1:{port}", "interval_secs": 20})
+        ids.append(tcp.get("id"))
+        for i in ids:
+            admin.post(f"/monitors/{i}/check")
+        def states():
+            return {m["name"]: m["state"] for m in admin.get("/monitors")[1] if m["name"].startswith("e2e-")}
+        ok = wait_for(lambda: states().get("e2e-up") == "up" and states().get("e2e-down") == "down" and states().get("e2e-tcp") == "up", 40)
+        check("monitors report up / down / tcp correctly", ok, states())
+        code, res = admin.get(f"/monitors/{up['id']}/results")
+        check("monitor results history available", code == 200, (code, str(res)[:200]))
+        code, al = admin.get("/alerts")
+        check("down monitor raises an alert", code == 200 and any("e2e-down" in json.dumps(a) for a in (al if isinstance(al, list) else al.get("alerts", al.get("active", [])))), str(al)[:300])
+    finally:
+        srv.shutdown()
+
+    # Maintenance windows mute alerts.
+    now = int(_t.time() * 1000)
+    code, mw = admin.post("/maintenance", {"target": f"monitor:{ids[1]}", "ends_at": now + 3_600_000, "reason": "e2e window"})
+    check("create maintenance window", code in (200, 201), (code, mw))
+    code, ml = admin.get("/maintenance")
+    check("maintenance window listed", code == 200 and any(m.get("reason") == "e2e window" for m in (ml if isinstance(ml, list) else ml.get("windows", []))), str(ml)[:200])
+    code, bad = admin.post("/maintenance", {"ends_at": now - 1000})
+    check("maintenance window in the past rejected", code == 400, (code, bad))
+    mid = mw.get("id") if isinstance(mw, dict) else None
+    if mid:
+        code, _ = admin.req("DELETE", f"/maintenance/{mid}")
+        check("delete maintenance window", code == 200, code)
+    for i in ids:
+        if i:
+            admin.req("DELETE", f"/monitors/{i}")
+
+    # Per-server alert thresholds.
+    code, cur = admin.get(f"/servers/{sid}/alert-rules")
+    check("per-server rules read (inherits global)", code == 200 and cur.get("custom") is False, (code, cur))
+    rules = dict(cur["rules"]); rules["cpu"] = dict(rules["cpu"], warn=55)
+    code, d = admin.req("PUT", f"/servers/{sid}/alert-rules", rules)
+    check("save per-server rules", code == 200, (code, d))
+    code, d = admin.get(f"/servers/{sid}/alert-rules")
+    check("per-server rules are custom and applied", d.get("custom") is True and d["rules"]["cpu"]["warn"] == 55, d)
+    rules["cpu"] = dict(rules["cpu"], warn=0)
+    code, d = admin.req("PUT", f"/servers/{sid}/alert-rules", rules)
+    check("invalid per-server rules rejected", code == 400, (code, d))
+    code, d = admin.req("DELETE", f"/servers/{sid}/alert-rules")
+    check("reset per-server rules", code == 200 and admin.get(f"/servers/{sid}/alert-rules")[1].get("custom") is False, (code, d))
+
+    # History and update settings.
+    code, h = admin.get(f"/servers/{sid}/usage-history?kind=container&name=x&range=6h")
+    check("container usage history endpoint answers", code == 200, (code, str(h)[:200]))
+    code, u = admin.get("/agent-updates")
+    check("agent update settings readable", code == 200 and "auto_update" in u and u.get("hub_version"), (code, u))
+    code, d = admin.req("PUT", "/agent-updates", {"auto_update": False})
+    check("agent auto-update can be switched off and on", code == 200 and admin.get("/agent-updates")[1]["auto_update"] is False and admin.req("PUT", "/agent-updates", {"auto_update": True})[0] == 200, (code, d))
+
+
 def k8s_checks(hub, admin, sid, mock_dir):
     import requests as rq
     mock = rq.Session()
@@ -415,11 +503,11 @@ def main():
             created_servers.append(srvd["id"])
             cfg = f"/tmp/{tag}.toml"
             if fp:
-                bad = subprocess.run([a.agent_bin, "enroll", "--hub", hub, "--token", srvd["token"], "--fingerprint", ":".join(["AA"] * 32), "--config", cfg], capture_output=True, text=True)
+                bad = subprocess.run([a.agent_bin, "enroll", "--hub", hub, f"--token={srvd['token']}", "--fingerprint", ":".join(["AA"] * 32), "--config", cfg], capture_output=True, text=True)
                 check("wrong fingerprint refused", bad.returncode != 0 and "mismatch" in bad.stderr, bad.stderr[-300:])
-            ok = subprocess.run([a.agent_bin, "enroll", "--hub", hub, "--token", srvd["token"], "--config", cfg] + (["--fingerprint", fp] if fp else []), capture_output=True, text=True)
+            ok = subprocess.run([a.agent_bin, "enroll", "--hub", hub, f"--token={srvd['token']}", "--config", cfg] + (["--fingerprint", fp] if fp else []), capture_output=True, text=True)
             check("enrollment succeeds", ok.returncode == 0, ok.stderr[-300:])
-            again = subprocess.run([a.agent_bin, "enroll", "--hub", hub, "--token", srvd["token"], "--config", cfg + "2"] + (["--fingerprint", fp] if fp else []), capture_output=True, text=True)
+            again = subprocess.run([a.agent_bin, "enroll", "--hub", hub, f"--token={srvd['token']}", "--config", cfg + "2"] + (["--fingerprint", fp] if fp else []), capture_output=True, text=True)
             check("token cannot be reused", again.returncode != 0 and "invalid or expired" in again.stderr, again.stderr[-200:])
             check("agent config is private (0600)", oct(os.stat(cfg).st_mode & 0o777) == "0o600", oct(os.stat(cfg).st_mode))
             p = subprocess.Popen([a.agent_bin, "run", "--config", cfg], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -515,6 +603,9 @@ def main():
         if a.k8s_mock_dir:
             section("Kubernetes (mock API server)")
             k8s_checks(hub, admin, sid, a.k8s_mock_dir)
+
+        section("v1.3: uptime, maintenance, per-server rules, web app")
+        v13_checks(hub, admin, sid)
 
         section("Audit")
         code, d = admin.get("/audit?limit=200")

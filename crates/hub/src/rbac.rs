@@ -21,6 +21,8 @@ pub const ALERTS_MANAGE: &str = "alerts.manage";
 pub const K8S_VIEW: &str = "k8s.view";
 pub const K8S_CONTROL: &str = "k8s.control";
 pub const K8S_EXEC: &str = "k8s.exec";
+pub const SERVICES_VIEW: &str = "services.view";
+pub const SERVICES_CONTROL: &str = "services.control";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PermInfo {
@@ -37,10 +39,12 @@ pub const CATALOG: &[PermInfo] = &[
     PermInfo { key: MSSQL_VIEW, group: "Monitoring", label: "View SQL Server", description: "Instance status, databases and counters", dangerous: false },
     PermInfo { key: IIS_VIEW, group: "Monitoring", label: "View IIS", description: "Sites, bindings and application pools", dangerous: false },
     PermInfo { key: K8S_VIEW, group: "Monitoring", label: "View Kubernetes", description: "Nodes, workloads, pods, services and events", dangerous: false },
+    PermInfo { key: SERVICES_VIEW, group: "Monitoring", label: "View services", description: "systemd units / Windows services and their state", dangerous: false },
     PermInfo { key: LOGS_VIEW, group: "Monitoring", label: "View logs", description: "Container, pod, IIS and SQL Server logs", dangerous: false },
     PermInfo { key: CONTAINERS_CONTROL, group: "Operations", label: "Control containers", description: "Start, stop, restart, pause and kill containers", dangerous: false },
     PermInfo { key: IIS_CONTROL, group: "Operations", label: "Control IIS", description: "Start/stop sites, recycle application pools", dangerous: false },
     PermInfo { key: K8S_CONTROL, group: "Operations", label: "Control Kubernetes", description: "Restart rollouts, scale workloads, delete pods, cordon nodes", dangerous: false },
+    PermInfo { key: SERVICES_CONTROL, group: "Operations", label: "Control services", description: "Start, stop, restart, enable and disable system services", dangerous: true },
     PermInfo { key: CONTAINERS_EXEC, group: "Operations", label: "Container terminal", description: "Open an interactive shell inside containers", dangerous: true },
     PermInfo { key: K8S_EXEC, group: "Operations", label: "Pod terminal", description: "Open an interactive shell inside Kubernetes pods", dangerous: true },
     PermInfo { key: CONTAINERS_DELETE, group: "Destructive", label: "Delete containers", description: "Remove containers", dangerous: true },
@@ -66,6 +70,9 @@ pub fn role_upgrades() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         ("rbac_v1_2_k8s", "Operator", vec![K8S_VIEW, K8S_CONTROL, K8S_EXEC]),
         ("rbac_v1_2_k8s", "Tester", vec![K8S_VIEW]),
         ("rbac_v1_2_k8s", "Viewer", vec![K8S_VIEW]),
+        ("rbac_v1_3_services", "Operator", vec![SERVICES_VIEW, SERVICES_CONTROL]),
+        ("rbac_v1_3_services", "Tester", vec![SERVICES_VIEW]),
+        ("rbac_v1_3_services", "Viewer", vec![SERVICES_VIEW]),
     ]
 }
 
@@ -76,14 +83,14 @@ pub fn builtin_roles() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             "Operator",
             "View everything, read logs, control containers and IIS, open terminals. Cannot delete.",
-            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, K8S_CONTROL, CONTAINERS_EXEC, K8S_EXEC, ALERTS_MANAGE],
+            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, K8S_CONTROL, SERVICES_CONTROL, CONTAINERS_EXEC, K8S_EXEC, ALERTS_MANAGE],
         ),
         (
             "Tester",
             "View servers and logs, restart containers. No terminal, no deletes.",
-            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, LOGS_VIEW, CONTAINERS_CONTROL],
+            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL],
         ),
-        ("Viewer", "Read-only dashboards and logs", vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, LOGS_VIEW]),
+        ("Viewer", "Read-only dashboards and logs", vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW]),
     ]
 }
 
@@ -115,7 +122,17 @@ pub fn for_request(r: &Request) -> &'static str {
         | Request::K8sServices { .. }
         | Request::K8sEvents { .. }
         | Request::K8sGet { .. } => K8S_VIEW,
-        Request::K8sPodDelete { .. } | Request::K8sRolloutRestart { .. } | Request::K8sScale { .. } | Request::K8sNodeCordon { .. } => K8S_CONTROL,
+        Request::K8sPodDelete { .. } | Request::K8sRolloutRestart { .. } | Request::K8sScale { .. } | Request::K8sNodeCordon { .. } | Request::K8sCronJobTrigger { .. } => K8S_CONTROL,
+        Request::K8sResources { .. } | Request::K8sNodeDetail { .. } | Request::K8sNamespaceUsage => K8S_VIEW,
+        Request::ServicesList => SERVICES_VIEW,
+        Request::ServiceAction { .. } => SERVICES_CONTROL,
+        Request::DockerStacks | Request::DockerStackFile { .. } => DOCKER_VIEW,
+        // Redeploying replaces containers (like recreate); start / stop / restart are routine.
+        Request::DockerStackAction { action, .. } => match action {
+            monitorlab_common::StackAction::Redeploy | monitorlab_common::StackAction::PullRedeploy => CONTAINERS_DELETE,
+            _ => CONTAINERS_CONTROL,
+        },
+        Request::SelfUpdate { .. } => SERVERS_MANAGE,
     }
 }
 
@@ -137,6 +154,10 @@ pub fn is_mutating(r: &Request) -> bool {
             | Request::K8sRolloutRestart { .. }
             | Request::K8sScale { .. }
             | Request::K8sNodeCordon { .. }
+            | Request::K8sCronJobTrigger { .. }
+            | Request::ServiceAction { .. }
+            | Request::DockerStackAction { .. }
+            | Request::SelfUpdate { .. }
     )
 }
 
@@ -150,13 +171,15 @@ pub fn for_stream(r: &StreamRequest) -> &'static str {
         StreamRequest::MssqlLogFollow { .. } => LOGS_VIEW,
         StreamRequest::K8sPodLogs { .. } => LOGS_VIEW,
         StreamRequest::K8sPodExec { .. } => K8S_EXEC,
+        StreamRequest::StackLogs { .. } => LOGS_VIEW,
+        StreamRequest::SystemLogs { .. } => LOGS_VIEW,
     }
 }
 
 /// Seconds to wait for an agent reply.
 pub fn timeout_secs(r: &Request) -> u64 {
     match r {
-        Request::DockerPrune { .. } | Request::DockerImageRemove { .. } | Request::DockerContainerRecreate { .. } => 900,
+        Request::DockerPrune { .. } | Request::DockerImageRemove { .. } | Request::DockerContainerRecreate { .. } | Request::DockerStackAction { .. } | Request::SelfUpdate { .. } => 900,
         Request::DockerContainerAction { .. } | Request::DockerContainerRemove { .. } => 120,
         Request::DockerDiskUsage | Request::IisSiteAction { .. } | Request::IisAppPoolAction { .. } => 120,
         _ => 30,

@@ -124,6 +124,88 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE users ADD COLUMN title TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT '';
     "#,
+    // v4: container / pod history, uptime monitors, maintenance windows, per-server alert rules
+    r#"
+    CREATE TABLE usage_raw (
+        agent_id TEXT NOT NULL,
+        kind INTEGER NOT NULL,          -- 0 container (name), 1 pod (namespace/pod)
+        name TEXT NOT NULL,
+        grp TEXT NOT NULL DEFAULT '',   -- compose project / namespace/workload
+        ts INTEGER NOT NULL,
+        cpu REAL NOT NULL,              -- container: % of one core · pod: millicores
+        mem REAL NOT NULL,
+        PRIMARY KEY (agent_id, kind, name, ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX usage_raw_grp ON usage_raw(agent_id, kind, grp, ts);
+    CREATE INDEX usage_raw_ts ON usage_raw(ts);
+    CREATE TABLE usage_15m (
+        agent_id TEXT NOT NULL,
+        kind INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        grp TEXT NOT NULL DEFAULT '',
+        ts INTEGER NOT NULL,
+        cpu REAL NOT NULL,
+        cpu_max REAL NOT NULL,
+        mem REAL NOT NULL,
+        mem_max REAL NOT NULL,
+        PRIMARY KEY (agent_id, kind, name, ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX usage_15m_grp ON usage_15m(agent_id, kind, grp, ts);
+    CREATE INDEX usage_15m_ts ON usage_15m(ts);
+
+    CREATE TABLE monitors (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,             -- http | tcp
+        target TEXT NOT NULL,           -- URL or host:port
+        method TEXT NOT NULL DEFAULT 'GET',
+        expect_status TEXT NOT NULL DEFAULT '200-399',
+        keyword TEXT NOT NULL DEFAULT '',
+        interval_secs INTEGER NOT NULL DEFAULT 60,
+        timeout_secs INTEGER NOT NULL DEFAULT 10,
+        fail_threshold INTEGER NOT NULL DEFAULT 2,
+        ssl_warn_days INTEGER NOT NULL DEFAULT 14,
+        ignore_tls INTEGER NOT NULL DEFAULT 0,
+        slow_ms INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        last_check INTEGER NULL,
+        last_ok INTEGER NULL,
+        last_ms INTEGER NULL,
+        last_error TEXT NULL,
+        last_status INTEGER NULL,
+        fails INTEGER NOT NULL DEFAULT 0,
+        cert_expires INTEGER NULL,
+        cert_issuer TEXT NULL,
+        cert_subject TEXT NULL
+    );
+    CREATE TABLE monitor_results (
+        monitor_id INTEGER NOT NULL,
+        ts INTEGER NOT NULL,
+        ok INTEGER NOT NULL,
+        ms INTEGER NULL,
+        status INTEGER NULL,
+        error TEXT NULL,
+        PRIMARY KEY (monitor_id, ts)
+    ) WITHOUT ROWID;
+    CREATE INDEX monitor_results_ts ON monitor_results(ts);
+
+    CREATE TABLE maintenance (
+        id INTEGER PRIMARY KEY,
+        target TEXT NULL,               -- agent id, 'monitor:<id>', or NULL = everything
+        starts_at INTEGER NOT NULL,
+        ends_at INTEGER NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE alert_overrides (
+        agent_id TEXT PRIMARY KEY,
+        rules TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    ALTER TABLE alerts ADD COLUMN last_notified_at INTEGER NULL;
+    "#,
 ];
 
 impl Db {

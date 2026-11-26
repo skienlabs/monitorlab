@@ -1,5 +1,6 @@
 //! Docker engine integration (containers, logs, exec, stats, images, volumes, networks, cleanup).
 
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use monitorlab_common::{AgentMsg, ContainerAction, ContainerLiveStat, ContainerStatsSample, DockerSummary, LogLine, PruneTarget, StreamData};
+use monitorlab_common::{AgentMsg, ContainerAction, ContainerLiveStat, ContainerStatsSample, ContainerUsage, StackAction, DockerSummary, LogLine, PruneTarget, StreamData};
 
 use crate::session::StreamCtl;
 use crate::util::{b64, now_ms, truncate};
@@ -30,6 +31,15 @@ pub struct DockerCtl {
     pub d: Docker,
     #[cfg_attr(not(unix), allow(dead_code))]
     socket: String,
+    live: Arc<LiveStats>,
+}
+
+/// Latest stats of every running container, kept by one background task (one Docker stats
+/// stream per container, like `docker stats`). Feeds the live list and the stored history.
+#[derive(Default)]
+struct LiveStats {
+    map: std::sync::Mutex<HashMap<String, (ContainerLiveStat, String, Option<String>)>>,
+    started: std::sync::atomic::AtomicBool,
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -37,6 +47,19 @@ fn default_socket() -> String {
     if let Ok(h) = std::env::var("DOCKER_HOST") {
         if let Some(p) = h.strip_prefix("unix://") {
             return p.to_string();
+        }
+    }
+    if !std::path::Path::new("/var/run/docker.sock").exists() {
+        // macOS: Docker Desktop / OrbStack / Colima keep the socket in a user's home folder.
+        if let Ok(users) = std::fs::read_dir("/Users") {
+            for u in users.flatten() {
+                for rel in [".docker/run/docker.sock", ".orbstack/run/docker.sock", ".colima/default/docker.sock", ".rd/docker.sock"] {
+                    let p = u.path().join(rel);
+                    if p.exists() {
+                        return p.display().to_string();
+                    }
+                }
+            }
         }
     }
     "/var/run/docker.sock".to_string()
@@ -48,13 +71,13 @@ impl DockerCtl {
         {
             let socket = socket.unwrap_or_else(default_socket);
             let d = Docker::connect_with_socket(&socket, 120, bollard::API_DEFAULT_VERSION)?;
-            Ok(Self { d, socket })
+            Ok(Self { d, socket, live: Default::default() })
         }
         #[cfg(not(unix))]
         {
             let _ = socket;
             let d = Docker::connect_with_local_defaults()?;
-            Ok(Self { d, socket: String::new() })
+            Ok(Self { d, socket: String::new(), live: Default::default() })
         }
     }
 
@@ -732,71 +755,309 @@ impl DockerCtl {
         Ok(())
     }
 
-    /// One stats stream per running container (as `docker stats` does), batched every 2 s.
-    /// The container set is re-listed every 10 s; all per-container tasks stop with the stream.
-    pub async fn stream_stats_all(&self, sid: u64, out: &mpsc::Sender<AgentMsg>) -> Result<()> {
-        struct Tasks(HashMap<String, tokio::task::JoinHandle<()>>);
-        impl Drop for Tasks {
-            fn drop(&mut self) {
-                for (_, t) in self.0.drain() {
-                    t.abort();
-                }
-            }
+    /// Start the background stats collector once.
+    pub fn ensure_live(&self) {
+        if self.live.started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
         }
-        let latest: std::sync::Arc<std::sync::Mutex<HashMap<String, ContainerLiveStat>>> = Default::default();
-        let mut tasks = Tasks(HashMap::new());
+        let d = self.d.clone();
+        let live = self.live.clone();
+        tokio::spawn(async move {
+            let mut tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+            loop {
+                let list = d.list_containers(Some(ListContainersOptions::<String> { all: false, ..Default::default() })).await;
+                if let Ok(list) = list {
+                    let running: HashMap<String, (String, Option<String>)> = list
+                        .into_iter()
+                        .filter_map(|c| {
+                            let id = c.id?;
+                            let name = c.names.and_then(|n| n.first().cloned()).unwrap_or_default().trim_start_matches('/').to_string();
+                            let project = c.labels.and_then(|l| l.get("com.docker.compose.project").cloned());
+                            Some((id, (name, project)))
+                        })
+                        .collect();
+                    tasks.retain(|id, t| {
+                        let keep = running.contains_key(id) && !t.is_finished();
+                        if !keep {
+                            t.abort();
+                        }
+                        keep
+                    });
+                    live.map.lock().unwrap_or_else(|e| e.into_inner()).retain(|id, _| running.contains_key(id));
+                    for (id, (name, project)) in running {
+                        if tasks.contains_key(&id) {
+                            continue;
+                        }
+                        let (d2, live2, cid) = (d.clone(), live.clone(), id.clone());
+                        tasks.insert(
+                            id,
+                            tokio::spawn(async move {
+                                let mut st = d2.stats(&cid, Some(StatsOptions { stream: true, one_shot: false }));
+                                while let Some(Ok(item)) = st.next().await {
+                                    let s = stats_sample(&item);
+                                    live2.map.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                                        cid.clone(),
+                                        (ContainerLiveStat { id: cid.clone(), cpu: s.cpu, mem_used: s.mem_used, mem_limit: s.mem_limit }, name.clone(), project.clone()),
+                                    );
+                                }
+                            }),
+                        );
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        });
+    }
+
+    /// Current usage of every running container (for the metrics sample / history).
+    pub fn usage(&self) -> Vec<ContainerUsage> {
+        self.live
+            .map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|(s, name, project)| ContainerUsage { id: s.id.clone(), name: name.clone(), project: project.clone(), cpu: s.cpu, mem: s.mem_used })
+            .collect()
+    }
+
+    /// Live CPU / memory of all running containers, every 2 s, from the background collector.
+    pub async fn stream_stats_all(&self, sid: u64, out: &mpsc::Sender<AgentMsg>) -> Result<()> {
+        let fresh = !self.live.started.load(std::sync::atomic::Ordering::SeqCst);
+        self.ensure_live();
+        if fresh {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut listed: Option<std::time::Instant> = None;
-        let mut first = true;
         loop {
             tick.tick().await;
-            if listed.map(|t| t.elapsed() >= Duration::from_secs(10)).unwrap_or(true) {
-                listed = Some(std::time::Instant::now());
-                let running: HashSet<String> = self
-                    .d
-                    .list_containers(Some(ListContainersOptions::<String> { all: false, ..Default::default() }))
-                    .await?
-                    .into_iter()
-                    .filter_map(|c| c.id)
-                    .collect();
-                tasks.0.retain(|id, t| {
-                    let keep = running.contains(id) && !t.is_finished();
-                    if !keep {
-                        t.abort();
-                    }
-                    keep
-                });
-                latest.lock().unwrap_or_else(|e| e.into_inner()).retain(|id, _| running.contains(id));
-                for id in running {
-                    if tasks.0.contains_key(&id) {
-                        continue;
-                    }
-                    let d = self.d.clone();
-                    let map = latest.clone();
-                    let cid = id.clone();
-                    let h = tokio::spawn(async move {
-                        let mut st = d.stats(&cid, Some(StatsOptions { stream: true, one_shot: false }));
-                        while let Some(Ok(item)) = st.next().await {
-                            let s = stats_sample(&item);
-                            map.lock().unwrap_or_else(|e| e.into_inner()).insert(
-                                cid.clone(),
-                                ContainerLiveStat { id: cid.clone(), cpu: s.cpu, mem_used: s.mem_used, mem_limit: s.mem_limit },
-                            );
-                        }
-                    });
-                    tasks.0.insert(id, h);
-                }
-            }
-            if first {
-                // Give the per-container streams a moment so the first batch is not empty.
-                first = false;
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-            }
-            let items: Vec<ContainerLiveStat> = latest.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+            let items: Vec<ContainerLiveStat> = self.live.map.lock().unwrap_or_else(|e| e.into_inner()).values().map(|v| v.0.clone()).collect();
             out.send(AgentMsg::Stream { sid, data: StreamData::StatsAll { ts: now_ms(), items } })
                 .await
                 .map_err(|_| anyhow!("closed"))?;
+        }
+    }
+
+    // ------------------------------------------------------------------ compose stacks
+
+    async fn stack_containers(&self, project: &str) -> Result<Vec<bollard::models::ContainerSummary>> {
+        let mut filters = HashMap::new();
+        filters.insert("label".to_string(), vec![format!("com.docker.compose.project={project}")]);
+        let mut v = self.d.list_containers(Some(ListContainersOptions::<String> { all: true, filters, ..Default::default() })).await?;
+        v.sort_by_key(|c| c.names.as_ref().and_then(|n| n.first().cloned()).unwrap_or_default());
+        Ok(v)
+    }
+
+    pub async fn stacks(&self) -> Result<Value> {
+        let list = self.d.list_containers(Some(ListContainersOptions::<String> { all: true, ..Default::default() })).await?;
+        let mut stacks: std::collections::BTreeMap<String, Value> = Default::default();
+        let usage: HashMap<String, (f64, u64)> = self.usage().into_iter().map(|u| (u.id, (u.cpu, u.mem))).collect();
+        for c in list {
+            let labels = c.labels.clone().unwrap_or_default();
+            let Some(project) = labels.get("com.docker.compose.project").cloned() else { continue };
+            let e = stacks.entry(project.clone()).or_insert_with(|| {
+                json!({
+                    "name": project,
+                    "config_files": labels.get("com.docker.compose.project.config_files").cloned().unwrap_or_default(),
+                    "working_dir": labels.get("com.docker.compose.project.working_dir").cloned().unwrap_or_default(),
+                    "containers": [], "running": 0, "total": 0, "cpu": 0.0, "mem": 0u64, "images": [],
+                })
+            });
+            let running = c.state.as_deref() == Some("running");
+            let (cpu, mem) = c.id.as_ref().and_then(|i| usage.get(i)).copied().unwrap_or((0.0, 0));
+            e["total"] = json!(e["total"].as_u64().unwrap_or(0) + 1);
+            if running {
+                e["running"] = json!(e["running"].as_u64().unwrap_or(0) + 1);
+            }
+            e["cpu"] = json!(e["cpu"].as_f64().unwrap_or(0.0) + cpu);
+            e["mem"] = json!(e["mem"].as_u64().unwrap_or(0) + mem);
+            if let Some(a) = e["containers"].as_array_mut() {
+                a.push(json!({
+                    "id": c.id, "name": c.names.and_then(|n| n.first().cloned()).unwrap_or_default().trim_start_matches('/'),
+                    "service": labels.get("com.docker.compose.service"), "state": c.state, "status": c.status, "image": c.image,
+                    "cpu": cpu, "mem": mem,
+                }));
+            }
+        }
+        Ok(Value::Array(stacks.into_values().collect()))
+    }
+
+    /// The compose file(s) of a stack, read from the host (paths come from compose's labels).
+    pub async fn stack_file(&self, project: &str, host_root: Option<&str>) -> Result<Value> {
+        let cs = self.stack_containers(project).await?;
+        let labels = cs.first().and_then(|c| c.labels.clone()).ok_or_else(|| anyhow!("stack {project} not found"))?;
+        let files = labels.get("com.docker.compose.project.config_files").cloned().unwrap_or_default();
+        let dir = labels.get("com.docker.compose.project.working_dir").cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        let mut names: Vec<String> = files.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+        // .env next to the compose file: list it but never send values.
+        let env_path = if dir.is_empty() { None } else { Some(format!("{}/.env", dir.trim_end_matches('/'))) };
+        names.dedup();
+        for f in names {
+            let full = if f.starts_with('/') || dir.is_empty() { f.clone() } else { format!("{}/{f}", dir.trim_end_matches('/')) };
+            let local = crate::util::host_path(host_root, &full);
+            let content = match std::fs::metadata(&local) {
+                Ok(m) if m.len() > 512 * 1024 => Err("file is larger than 512 KB".to_string()),
+                Ok(_) => std::fs::read_to_string(&local).map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            out.push(match content {
+                Ok(c) => json!({ "path": full, "content": c }),
+                Err(e) => json!({ "path": full, "error": e }),
+            });
+        }
+        let env_keys: Option<Vec<String>> = env_path.as_ref().and_then(|p| std::fs::read_to_string(crate::util::host_path(host_root, p)).ok()).map(|t| {
+            t.lines()
+                .filter_map(|l| {
+                    let l = l.trim();
+                    if l.is_empty() || l.starts_with('#') { None } else { l.split_once('=').map(|(k, _)| k.trim().to_string()) }
+                })
+                .collect()
+        });
+        Ok(json!({ "project": project, "working_dir": dir, "files": out, "env_file": env_path, "env_keys": env_keys }))
+    }
+
+    pub async fn stack_action(&self, project: &str, action: StackAction, host_root: Option<&str>) -> Result<Value> {
+        let cs = self.stack_containers(project).await?;
+        if cs.is_empty() {
+            bail!("stack {project} has no containers");
+        }
+        let mut results = Vec::new();
+        let mut failed = 0;
+        // Pull each distinct image once, then recreate.
+        let mut pulled: HashSet<String> = HashSet::new();
+        for c in &cs {
+            let id = c.id.clone().unwrap_or_default();
+            let name = c.names.as_ref().and_then(|n| n.first().cloned()).unwrap_or_default().trim_start_matches('/').to_string();
+            let running = c.state.as_deref() == Some("running");
+            let r: Result<Value> = match action {
+                StackAction::Start if !running => self.action(&id, ContainerAction::Start).await,
+                StackAction::Start => Ok(json!({ "skipped": "already running" })),
+                StackAction::Stop if running => self.action(&id, ContainerAction::Stop).await,
+                StackAction::Stop => Ok(json!({ "skipped": "not running" })),
+                StackAction::Restart => self.action(&id, ContainerAction::Restart).await,
+                StackAction::Redeploy => self.recreate(&id, false, host_root).await,
+                StackAction::PullRedeploy => {
+                    let image = c.image.clone().unwrap_or_default();
+                    if !image.is_empty() && !image.contains('@') && !image.starts_with("sha256:") && pulled.insert(image.clone()) {
+                        if let Err(e) = self.pull(&image, host_root).await {
+                            failed += 1;
+                            results.push(json!({ "container": name, "ok": false, "error": e.to_string() }));
+                            continue;
+                        }
+                    }
+                    self.recreate(&id, false, host_root).await.map(|mut v| {
+                        v["pulled"] = json!(true);
+                        v
+                    })
+                }
+            };
+            match r {
+                Ok(v) => results.push(json!({ "container": name, "ok": true, "result": v })),
+                Err(e) => {
+                    failed += 1;
+                    results.push(json!({ "container": name, "ok": false, "error": e.to_string() }));
+                }
+            }
+        }
+        Ok(json!({ "ok": failed == 0, "failed": failed, "results": results }))
+    }
+
+    /// Logs of every container in a stack merged into one stream (each line tagged with its container).
+    pub async fn stream_stack_logs(&self, project: &str, tail: u32, since: Option<i64>, sid: u64, out: &mpsc::Sender<AgentMsg>) -> Result<()> {
+        let cs = self.stack_containers(project).await?;
+        if cs.is_empty() {
+            bail!("stack {project} has no containers");
+        }
+        let (tx, mut rx) = mpsc::channel::<LogLine>(4096);
+        let mut handles = Vec::new();
+        for c in cs {
+            let id = c.id.clone().unwrap_or_default();
+            let name = c.names.and_then(|n| n.first().cloned()).unwrap_or_default().trim_start_matches('/').to_string();
+            let (d, tx) = (self.d.clone(), tx.clone());
+            handles.push(tokio::spawn(async move {
+                let opts = LogsOptions::<String> {
+                    follow: true,
+                    stdout: true,
+                    stderr: true,
+                    timestamps: true,
+                    since: since.unwrap_or(0),
+                    until: 0,
+                    tail: if since.is_some() { "all".into() } else { tail.min(20_000).to_string() },
+                };
+                let mut st = d.logs(&id, Some(opts));
+                let mut partial: [String; 3] = Default::default();
+                while let Some(Ok(o)) = st.next().await {
+                    let (s, bytes) = match o {
+                        LogOutput::StdOut { message } | LogOutput::Console { message } => (1u8, message),
+                        LogOutput::StdErr { message } => (2u8, message),
+                        LogOutput::StdIn { .. } => continue,
+                    };
+                    let buf = &mut partial[s as usize];
+                    buf.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(idx) = buf.find('\n') {
+                        let line: String = buf.drain(..=idx).collect();
+                        let mut l = parse_log_line(line.trim_end_matches('\n'), s);
+                        l.src = Some(name.clone());
+                        if tx.send(l).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }));
+        }
+        drop(tx);
+        struct Abort(Vec<tokio::task::JoinHandle<()>>);
+        impl Drop for Abort {
+            fn drop(&mut self) {
+                for h in &self.0 {
+                    h.abort();
+                }
+            }
+        }
+        let _guard = Abort(handles);
+        // Let every container's backlog arrive, then send it in time order.
+        let mut batch: Vec<LogLine> = Vec::new();
+        let deadline = tokio::time::sleep(Duration::from_millis(700));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                l = rx.recv() => match l {
+                    Some(l) => batch.push(l),
+                    None => break,
+                },
+                _ = &mut deadline => break,
+            }
+        }
+        batch.sort_by(|a, b| a.ts.cmp(&b.ts));
+        for chunk in batch.chunks(1000) {
+            out.send(AgentMsg::Stream { sid, data: StreamData::Lines { lines: chunk.to_vec() } }).await.map_err(|_| anyhow!("closed"))?;
+        }
+        let mut batch = Vec::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(150));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                l = rx.recv() => match l {
+                    Some(l) => {
+                        batch.push(l);
+                        if batch.len() >= 500 {
+                            batch.sort_by(|a: &LogLine, b: &LogLine| a.ts.cmp(&b.ts));
+                            flush(out, sid, &mut batch).await?;
+                        }
+                    }
+                    None => {
+                        flush(out, sid, &mut batch).await?;
+                        return Ok(());
+                    }
+                },
+                _ = tick.tick() => {
+                    if !batch.is_empty() {
+                        batch.sort_by(|a: &LogLine, b: &LogLine| a.ts.cmp(&b.ts));
+                        flush(out, sid, &mut batch).await?;
+                    }
+                }
+            }
         }
     }
 
@@ -888,10 +1149,10 @@ pub(crate) fn parse_log_line(line: &str, s: u8) -> LogLine {
     if let Some((ts, rest)) = line.split_once(' ') {
         let b = ts.as_bytes();
         if b.len() >= 20 && b[4] == b'-' && b[10] == b'T' && b[0].is_ascii_digit() {
-            return LogLine { ts: Some(ts.to_string()), s, text: truncate(rest.to_string(), MAX_LOG_LINE) };
+            return LogLine { ts: Some(ts.to_string()), s, text: truncate(rest.to_string(), MAX_LOG_LINE), ..Default::default() };
         }
     }
-    LogLine { ts: None, s, text: truncate(line.to_string(), MAX_LOG_LINE) }
+    LogLine { ts: None, s, text: truncate(line.to_string(), MAX_LOG_LINE), ..Default::default() }
 }
 
 fn stats_sample(st: &Stats) -> ContainerStatsSample {

@@ -6,6 +6,9 @@ mod config;
 mod db;
 mod metrics;
 mod profile;
+mod history;
+mod monitors;
+mod updates;
 mod rbac;
 mod registry;
 mod state;
@@ -110,6 +113,18 @@ fn router(state: S) -> Router {
         .route("/auth/sessions/revoke-others", post(profile::revoke_other_sessions))
         .route("/auth/sessions/{key}", delete(profile::revoke_session))
         .route("/users/{id}/avatar", get(profile::get_avatar))
+        .route("/servers/{id}/usage-history", get(history::history))
+        .route("/servers/{id}/usage-top", get(history::top))
+        .route("/servers/{id}/update", post(updates::update_now))
+        .route("/servers/{id}/alert-rules", get(alerts::get_override).put(alerts::put_override).delete(alerts::delete_override))
+        .route("/maintenance", get(alerts::list_maintenance).post(alerts::create_maintenance))
+        .route("/maintenance/{id}", delete(alerts::delete_maintenance))
+        .route("/monitors", get(monitors::list).post(monitors::create))
+        .route("/monitors/test", post(monitors::test))
+        .route("/monitors/{id}", put(monitors::update).delete(monitors::delete))
+        .route("/monitors/{id}/check", post(monitors::check_now))
+        .route("/monitors/{id}/results", get(monitors::results))
+        .route("/agent-updates", get(updates::get_settings).put(updates::put_settings))
         .route("/servers", get(api::list_servers).post(api::create_server))
         .route("/servers/{id}", get(api::get_server).patch(api::rename_server).delete(api::delete_server))
         .route("/servers/{id}/metrics", get(api::server_metrics))
@@ -328,6 +343,7 @@ async fn run() -> Result<()> {
     // Warm the constant-time dummy hash so the first failed login is not faster.
     tokio::task::spawn_blocking(auth::dummy_hash);
 
+    tokio::spawn(monitors::scheduler(state.clone()));
     tokio::spawn(metrics::maintenance_loop(db.clone(), cfg.retention_raw_days, cfg.retention_days));
     tokio::spawn(alerts::evaluator_loop(state.clone()));
     if cfg.local_agent {

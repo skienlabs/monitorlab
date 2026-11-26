@@ -42,6 +42,12 @@ pub struct AlertRules {
     /// Kubernetes: node not ready (critical), failing pods / degraded workloads (warning).
     #[serde(default = "yes")]
     pub k8s_problems: bool,
+    /// systemd units failed / automatic Windows services stopped with an error (warning).
+    #[serde(default = "yes")]
+    pub failed_services: bool,
+    /// Re-send notifications for alerts still firing and not acknowledged every N minutes (0 = off).
+    #[serde(default)]
+    pub repeat_minutes: u32,
 }
 
 fn yes() -> bool {
@@ -60,6 +66,8 @@ impl Default for AlertRules {
             mssql_stopped: true,
             iis_stopped: true,
             k8s_problems: true,
+            failed_services: true,
+            repeat_minutes: 0,
         }
     }
 }
@@ -79,6 +87,9 @@ impl AlertRules {
         }
         if !(1..=1440).contains(&self.offline_min) {
             return Err("Offline delay must be between 1 and 1440 minutes".into());
+        }
+        if self.repeat_minutes != 0 && !(5..=10_080).contains(&self.repeat_minutes) {
+            return Err("Reminders must repeat every 5 minutes to 7 days (or be off)".into());
         }
         Ok(())
     }
@@ -177,6 +188,13 @@ pub fn evaluate(m: &MetricsSample, r: &AlertRules, sustained_cpu: Option<f64>, s
             }
         }
     }
+    if r.failed_services {
+        if let Some(f) = m.failed_services.as_ref().filter(|f| !f.is_empty()) {
+            let shown: Vec<&str> = f.iter().take(8).map(String::as_str).collect();
+            let more = if f.len() > 8 { format!(" and {} more", f.len() - 8) } else { String::new() };
+            out.push(("services".into(), Severity::Warning, format!("{} service(s) failed: {}{more}", f.len(), shown.join(", "))));
+        }
+    }
     if r.k8s_problems {
         if let Some(k) = &m.k8s {
             if !k.not_ready_nodes.is_empty() {
@@ -247,7 +265,8 @@ pub async fn evaluator_loop(state: S) {
 }
 
 async fn evaluate_all(state: &S, hub_started: i64) -> Result<()> {
-    let rules = load_rules(state).await;
+    let global = load_rules(state).await;
+    let overrides = load_overrides(state).await;
     let agents: Vec<(String, String, Option<i64>, bool, bool)> = state
         .db
         .run(|c| {
@@ -260,6 +279,7 @@ async fn evaluate_all(state: &S, hub_started: i64) -> Result<()> {
     let mut events = Vec::new();
 
     for (id, name, last_seen, is_local, enrolled) in agents {
+        let rules = overrides.get(&id).cloned().unwrap_or_else(|| global.clone());
         let mut desired: Vec<(String, Severity, String)> = Vec::new();
         if rules.enabled && enrolled {
             match state.reg.get(&id) {
@@ -304,27 +324,239 @@ async fn evaluate_all(state: &S, hub_started: i64) -> Result<()> {
         events.extend(reconcile(state, &id, &name, desired).await?);
     }
 
-    if !events.is_empty() {
-        let channels = load_channels(state).await?;
-        for ev in events {
-            for ch in channels.iter().filter(|c| c.enabled) {
-                // Same filter for recoveries: a channel only hears about alerts it was told about.
-                if Severity::parse(ev.severity) < Severity::parse(&ch.min_severity) {
-                    continue;
-                }
-                let (state2, ch2, ev2) = (state.clone(), ch.clone(), ev.clone());
-                tokio::spawn(async move {
-                    let res = send(&state2, &ch2, &ev2).await;
-                    record_delivery(&state2, ch2.id, res.err().map(|e| e.to_string())).await;
-                });
-            }
-        }
-    }
+    events.extend(reminders(state, &global, &overrides).await.unwrap_or_default());
+    notify(state, events).await;
     Ok(())
 }
 
+/// Alerts still firing and not acknowledged get re-sent every `repeat_minutes`.
+async fn reminders(state: &S, global: &AlertRules, overrides: &HashMap<String, AlertRules>) -> Result<Vec<Event>> {
+    let repeat: HashMap<String, i64> = overrides.iter().map(|(k, r)| (k.clone(), r.repeat_minutes as i64)).collect();
+    let default_repeat = global.repeat_minutes as i64;
+    if default_repeat == 0 && repeat.values().all(|v| *v == 0) {
+        return Ok(vec![]);
+    }
+    state
+        .db
+        .run(move |c| {
+            let now = now_ms();
+            let mut st = c.prepare(
+                "SELECT a.id, a.agent_id, COALESCE(g.name, m.name, a.agent_id), a.rule, a.severity, a.message, a.started_at, COALESCE(a.last_notified_at, a.started_at) \
+                 FROM alerts a LEFT JOIN agents g ON g.id = a.agent_id LEFT JOIN monitors m ON 'monitor:' || m.id = a.agent_id \
+                 WHERE a.resolved_at IS NULL AND a.acked_at IS NULL",
+            )?;
+            let rows = st
+                .query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut out = Vec::new();
+            for (aid, agent, name, rule, sev, msg, started, last) in rows {
+                let every = repeat.get(&agent).copied().unwrap_or(default_repeat);
+                if every > 0 && now - last >= every * 60_000 {
+                    c.execute("UPDATE alerts SET last_notified_at = ?1 WHERE id = ?2", params![now, aid])?;
+                    out.push(Event { kind: "reminder", severity: Severity::parse(&sev).as_str(), server_id: agent, server: name, rule, message: msg, started_at: started });
+                }
+            }
+            Ok(out)
+        })
+        .await
+}
+
+/// Send events to the matching channels, except for targets in a maintenance window.
+pub async fn notify(state: &S, events: Vec<Event>) {
+    if events.is_empty() {
+        return;
+    }
+    let windows = active_maintenance(state).await;
+    let events: Vec<Event> = events.into_iter().filter(|e| !in_maintenance(&windows, &e.server_id)).collect();
+    if events.is_empty() {
+        return;
+    }
+    let Ok(channels) = load_channels(state).await else { return };
+    for ev in events {
+        for ch in channels.iter().filter(|c| c.enabled) {
+            // Same filter for recoveries: a channel only hears about alerts it was told about.
+            if Severity::parse(ev.severity) < Severity::parse(&ch.min_severity) {
+                continue;
+            }
+            let (state2, ch2, ev2) = (state.clone(), ch.clone(), ev.clone());
+            tokio::spawn(async move {
+                let res = send(&state2, &ch2, &ev2).await;
+                record_delivery(&state2, ch2.id, res.err().map(|e| e.to_string())).await;
+            });
+        }
+    }
+}
+
+// =================================================================== maintenance windows
+
+/// (target, ends_at) of windows active now; target None = everything.
+pub async fn active_maintenance(state: &S) -> Vec<(Option<String>, i64)> {
+    state
+        .db
+        .run(|c| {
+            let now = now_ms();
+            let mut st = c.prepare("SELECT target, ends_at FROM maintenance WHERE starts_at <= ?1 AND ends_at > ?1")?;
+            let v = st.query_map([now], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(v)
+        })
+        .await
+        .unwrap_or_default()
+}
+
+pub fn in_maintenance(windows: &[(Option<String>, i64)], target: &str) -> bool {
+    windows.iter().any(|(t, _)| t.as_deref().map(|t| t == target).unwrap_or(true))
+}
+
+pub fn maintenance_until(windows: &[(Option<String>, i64)], target: &str) -> Option<i64> {
+    windows.iter().filter(|(t, _)| t.as_deref().map(|t| t == target).unwrap_or(true)).map(|w| w.1).max()
+}
+
+pub async fn list_maintenance(State(state): State<S>, user: AuthUser) -> ApiResult<Json<Value>> {
+    user.require(rbac::SERVERS_VIEW)?;
+    let rows = state
+        .db
+        .run(|c| {
+            let mut st = c.prepare(
+                "SELECT w.id, w.target, COALESCE(g.name, m.name), w.starts_at, w.ends_at, w.reason, w.created_by, w.created_at FROM maintenance w \
+                 LEFT JOIN agents g ON g.id = w.target LEFT JOIN monitors m ON 'monitor:' || m.id = w.target \
+                 WHERE w.ends_at > ?1 ORDER BY w.starts_at",
+            )?;
+            let v = st
+                .query_map([now_ms() - 86_400_000], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?, "target": r.get::<_, Option<String>>(1)?, "target_name": r.get::<_, Option<String>>(2)?,
+                        "starts_at": r.get::<_, i64>(3)?, "ends_at": r.get::<_, i64>(4)?, "reason": r.get::<_, String>(5)?,
+                        "created_by": r.get::<_, String>(6)?, "created_at": r.get::<_, i64>(7)?,
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(Value::Array(rows)))
+}
+
+#[derive(Deserialize)]
+pub struct MaintenanceBody {
+    /// Server id, `monitor:<id>`, or null for everything.
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    starts_at: Option<i64>,
+    ends_at: i64,
+    #[serde(default)]
+    reason: String,
+}
+
+pub async fn create_maintenance(State(state): State<S>, user: AuthUser, Json(b): Json<MaintenanceBody>) -> ApiResult<Json<Value>> {
+    user.require(rbac::ALERTS_MANAGE)?;
+    let now = now_ms();
+    let starts = b.starts_at.unwrap_or(now);
+    if b.ends_at <= starts || b.ends_at <= now {
+        return Err(ApiError::bad("The window must end in the future, after it starts"));
+    }
+    if b.ends_at - starts > 30 * 86_400_000 {
+        return Err(ApiError::bad("A maintenance window can last at most 30 days"));
+    }
+    if b.reason.len() > 200 {
+        return Err(ApiError::bad("Reason is too long (max 200 characters)"));
+    }
+    if let Some(t) = &b.target {
+        if !t.starts_with("monitor:") && !user.can_server(t) {
+            return Err(ApiError::not_found("Server not found"));
+        }
+    }
+    let by = user.email.clone();
+    let (t2, r2) = (b.target.clone(), b.reason.trim().to_string());
+    let id: i64 = state
+        .db
+        .run(move |c| {
+            c.execute(
+                "INSERT INTO maintenance (target, starts_at, ends_at, reason, created_by, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![t2, starts, b.ends_at, r2, by, now_ms()],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+        .await?;
+    audit(&state, Some(&user), "", AuditEntry {
+        action: "maintenance_scheduled",
+        server: None,
+        target: Some(b.target.clone().unwrap_or_else(|| "all servers and monitors".into())),
+        detail: Some(format!("{} → {}{}", fmt_ts(starts), fmt_ts(b.ends_at), if b.reason.is_empty() { String::new() } else { format!(" · {}", b.reason) })),
+        ok: true,
+    })
+    .await;
+    Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+pub async fn delete_maintenance(State(state): State<S>, user: AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    user.require(rbac::ALERTS_MANAGE)?;
+    let n = state.db.run(move |c| Ok(c.execute("DELETE FROM maintenance WHERE id = ?1", [id])?)).await?;
+    if n == 0 {
+        return Err(ApiError::not_found("Window not found"));
+    }
+    audit(&state, Some(&user), "", AuditEntry { action: "maintenance_ended", server: None, target: Some(id.to_string()), detail: None, ok: true }).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// =================================================================== per-server rules
+
+pub async fn load_overrides(state: &S) -> HashMap<String, AlertRules> {
+    state
+        .db
+        .run(|c| {
+            let mut st = c.prepare("SELECT agent_id, rules FROM alert_overrides")?;
+            let v = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(v)
+        })
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, j)| serde_json::from_str(&j).ok().map(|r| (id, r)))
+        .collect()
+}
+
+pub async fn get_override(State(state): State<S>, user: AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    user.require(rbac::SERVERS_VIEW)?;
+    if !user.can_server(&id) {
+        return Err(ApiError::not_found("Server not found"));
+    }
+    let o = load_overrides(&state).await.remove(&id);
+    let custom = o.is_some();
+    Ok(Json(json!({ "custom": custom, "rules": o.unwrap_or(load_rules(&state).await) })))
+}
+
+pub async fn put_override(State(state): State<S>, user: AuthUser, Path(id): Path<String>, Json(r): Json<AlertRules>) -> ApiResult<Json<Value>> {
+    user.require(rbac::ALERTS_MANAGE)?;
+    if !user.can_server(&id) {
+        return Err(ApiError::not_found("Server not found"));
+    }
+    r.validate().map_err(ApiError::bad)?;
+    let j = serde_json::to_string(&r).map_err(|e| ApiError::bad(e.to_string()))?;
+    let id2 = id.clone();
+    state
+        .db
+        .run(move |c| {
+            c.execute("INSERT OR REPLACE INTO alert_overrides (agent_id, rules, updated_at) VALUES (?1,?2,?3)", params![id2, j, now_ms()])?;
+            Ok(())
+        })
+        .await?;
+    audit(&state, Some(&user), "", AuditEntry { action: "alert_rules_changed", server: Some((&id, &id)), target: Some("custom rules for this server".into()), detail: None, ok: true }).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn delete_override(State(state): State<S>, user: AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    user.require(rbac::ALERTS_MANAGE)?;
+    let id2 = id.clone();
+    state.db.run(move |c| Ok(c.execute("DELETE FROM alert_overrides WHERE agent_id = ?1", [id2])?)).await?;
+    audit(&state, Some(&user), "", AuditEntry { action: "alert_rules_changed", server: Some((&id, &id)), target: Some("back to the global rules".into()), detail: None, ok: true }).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Bring stored open alerts for one agent in line with the desired set; returns events to notify.
-async fn reconcile(state: &S, agent_id: &str, name: &str, desired: Vec<(String, Severity, String)>) -> Result<Vec<Event>> {
+pub async fn reconcile(state: &S, agent_id: &str, name: &str, desired: Vec<(String, Severity, String)>) -> Result<Vec<Event>> {
     let id = agent_id.to_string();
     let name = name.to_string();
     state
@@ -348,7 +580,7 @@ async fn reconcile(state: &S, agent_id: &str, name: &str, desired: Vec<(String, 
                 match open.remove(rule) {
                     None => {
                         tx.execute(
-                            "INSERT INTO alerts (agent_id, rule, severity, message, started_at) VALUES (?1,?2,?3,?4,?5)",
+                            "INSERT INTO alerts (agent_id, rule, severity, message, started_at, last_notified_at) VALUES (?1,?2,?3,?4,?5,?5)",
                             params![id, rule, sev.as_str(), msg, now],
                         )?;
                         events.push(Event { kind: "firing", severity: sev.as_str(), server_id: id.clone(), server: name.clone(), rule: rule.clone(), message: msg.clone(), started_at: now });
@@ -356,6 +588,7 @@ async fn reconcile(state: &S, agent_id: &str, name: &str, desired: Vec<(String, 
                     Some(o) => {
                         tx.execute("UPDATE alerts SET severity = ?1, message = ?2 WHERE id = ?3", params![sev.as_str(), msg, o.id])?;
                         if *sev > o.severity {
+                            tx.execute("UPDATE alerts SET last_notified_at = ?1 WHERE id = ?2", params![now, o.id])?;
                             events.push(Event {
                                 kind: "escalated",
                                 severity: sev.as_str(),
@@ -452,6 +685,7 @@ pub fn payload(kind: &str, ev: &Event, link: Option<String>, brand: &str) -> Val
     let verb = match ev.kind {
         "resolved" => "RESOLVED",
         "escalated" => "ESCALATED",
+        "reminder" => "STILL FIRING",
         _ => "FIRING",
     };
     let title = format!("{icon} {verb} · {} · {}", ev.server, ev.message);
@@ -570,6 +804,7 @@ pub fn email_content(ev: &Event, link: Option<String>, brand: &str) -> (String, 
     let verb = match ev.kind {
         "resolved" => "RESOLVED",
         "escalated" => "ESCALATED",
+        "reminder" => "STILL FIRING",
         _ => "FIRING",
     };
     let subject = format!("[{brand}] {verb} {} · {} · {}", ev.severity, ev.server, ev.message);
@@ -762,8 +997,8 @@ pub async fn list(State(state): State<S>, user: AuthUser, Query(q): Query<ListQu
         .db
         .run(move |c| {
             let mut st = c.prepare(
-                "SELECT a.id, a.agent_id, COALESCE(g.name, ''), a.rule, a.severity, a.message, a.started_at, a.resolved_at, a.acked_by, a.acked_at \
-                 FROM alerts a LEFT JOIN agents g ON g.id = a.agent_id \
+                "SELECT a.id, a.agent_id, COALESCE(g.name, m.name, ''), a.rule, a.severity, a.message, a.started_at, a.resolved_at, a.acked_by, a.acked_at \
+                 FROM alerts a LEFT JOIN agents g ON g.id = a.agent_id LEFT JOIN monitors m ON 'monitor:' || m.id = a.agent_id \
                  WHERE a.id < ?1 AND (?2 = 0 OR a.resolved_at IS NULL) AND (?3 IS NULL OR a.agent_id = ?3) \
                  ORDER BY a.resolved_at IS NOT NULL, CASE a.severity WHEN 'critical' THEN 0 ELSE 1 END, a.id DESC LIMIT ?4",
             )?;
@@ -786,7 +1021,20 @@ pub async fn list(State(state): State<S>, user: AuthUser, Query(q): Query<ListQu
             Ok(rows)
         })
         .await?;
-    let rows: Vec<Value> = rows.into_iter().filter(|r| user.can_server(r["server_id"].as_str().unwrap_or(""))).collect();
+    let windows = active_maintenance(&state).await;
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .filter(|r| {
+            let id = r["server_id"].as_str().unwrap_or("");
+            id.starts_with("monitor:") || user.can_server(id)
+        })
+        .map(|mut r| {
+            let id = r["server_id"].as_str().unwrap_or("").to_string();
+            r["muted_until"] = json!(maintenance_until(&windows, &id));
+            r["source"] = json!(if id.starts_with("monitor:") { "monitor" } else { "server" });
+            r
+        })
+        .collect();
     Ok(Json(Value::Array(rows)))
 }
 

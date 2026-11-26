@@ -1,10 +1,10 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { Box, Boxes, ChevronRight, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
+import { BellRing, Wrench, Box, Boxes, ChevronRight, Cog, Layers3, ScrollText, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Metrics, Server } from "../types";
-import { ErrorBanner, Loading, Meter, Seg, Spinner, StatusChip, useLocalStorage, usePoll } from "../components/ui";
+import { ErrorBanner, Loading, Meter, Seg, Spinner, StatusChip, useLocalStorage, usePoll, Sorted } from "../components/ui";
 import { TimeChart } from "../components/Chart";
 import { OsIcon } from "../components/OsIcon";
 import { bytes, dateTime, duration, pct, rate, ratio } from "../format";
@@ -12,6 +12,9 @@ import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from ".
 import { MssqlTab } from "./MssqlTab";
 import { IisTab } from "./IisTab";
 import { KubernetesTab } from "./K8sTab";
+import { StacksTab } from "./Stacks";
+import { MaintenanceCard, RulesCard } from "./AlertSettings";
+import { ServicesTab, SystemLogsTab } from "./Services";
 import { Alert, AlertsTable } from "./AlertsPage";
 
 type Range = "15m" | "1h" | "6h" | "24h" | "7d" | "30d";
@@ -325,18 +328,19 @@ function ProcessesCard({ id, online }: { id: string; online: boolean }) {
         {loaded && loading && !data && <Loading label="Sampling processes…" />}
         {rows.length > 0 && (
           <div className="table-wrap">
-            <table className="table">
+            <Sorted rows={rows} acc={{ name: p => p.name, pid: p => p.pid, user: p => p.user, cpu: p => p.cpu, mem: p => p.mem }}>{(S) => (
+<table className="table">
               <thead>
                 <tr>
-                  <th>Process</th>
-                  <th>PID</th>
-                  <th>User</th>
-                  <th className="num">CPU</th>
-                  <th className="num">Memory</th>
+                  {S.th("name", "Process")}
+                  {S.th("pid", "PID")}
+                  {S.th("user", "User")}
+                  {S.th("cpu", "CPU", "num")}
+                  {S.th("mem", "Memory", "num")}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((p) => (
+                {S.rows.map((p) => (
                   <tr key={p.pid}>
                     <td className="mono">{p.name}</td>
                     <td className="tnum muted">{p.pid}</td>
@@ -347,6 +351,7 @@ function ProcessesCard({ id, online }: { id: string; online: boolean }) {
                 ))}
               </tbody>
             </table>
+)}</Sorted>
           </div>
         )}
       </div>
@@ -368,8 +373,12 @@ export function ServerPage() {
       { key: "images", label: "Images", icon: <Layers size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "volumes", label: "Volumes", icon: <HardDrive size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "networks", label: "Networks", icon: <Network size={17} />, show: !!caps?.docker && can("docker.view") },
+      { key: "stacks", label: "Stacks", icon: <Layers3 size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "cleanup", label: "Storage & cleanup", icon: <Sparkles size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "k8s", label: "Kubernetes", icon: <Boxes size={17} />, show: !!caps?.kubernetes && can("k8s.view") },
+      { key: "services", label: "Services", icon: <Cog size={17} />, show: !!caps?.services && can("services.view") },
+      { key: "syslogs", label: s?.hello?.os === "windows" ? "Event Log" : "System logs", icon: <ScrollText size={17} />, show: !!caps?.system_logs && can("logs.view") },
+      { key: "alerts", label: "Alerts", icon: <BellRing size={17} />, show: true },
       { key: "mssql", label: "SQL Server", icon: <Database size={17} />, show: !!caps?.mssql && can("mssql.view") },
       { key: "iis", label: "IIS", icon: <Globe size={17} />, show: !!caps?.iis && can("iis.view") },
     ];
@@ -416,6 +425,11 @@ export function ServerPage() {
             : "This server has not enrolled yet. Run the installer shown in Servers & agents."}
         </div>
       )}
+      {s.maintenance_until && (
+        <div className="banner" style={{ marginBottom: 12 }}>
+          <Wrench size={15} style={{ verticalAlign: "-2px" }} /> Maintenance: alert notifications for this server are paused until {dateTime(s.maintenance_until)}.
+        </div>
+      )}
       {s.reasons.length > 0 && (
         <div className={`banner ${s.status === "critical" ? "crit" : "warn"}`} style={{ marginBottom: 16 }}>
           {s.reasons.join(" · ")}
@@ -441,6 +455,15 @@ export function ServerPage() {
       {tab === "mssql" && <MssqlTab s={s} />}
       {tab === "iis" && <IisTab s={s} />}
       {tab === "k8s" && <KubernetesTab s={s} />}
+      {tab === "stacks" && <StacksTab s={s} />}
+      {tab === "alerts" && (
+        <div className="col" style={{ gap: 16 }}>
+          <RulesCard serverId={s.id} />
+          <MaintenanceCard target={s.id} />
+        </div>
+      )}
+      {tab === "services" && <ServicesTab s={s} />}
+      {tab === "syslogs" && <SystemLogsTab s={s} />}
     </div>
   );
 }

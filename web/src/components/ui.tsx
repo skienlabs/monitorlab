@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, Search as SearchIcon, X } from "lucide-react";
 import type { Status } from "../types";
@@ -456,4 +456,66 @@ export function Avatar({ src, name, size = 32 }: { src?: string | null; name: st
       {label.charAt(0).toUpperCase()}
     </span>
   );
+}
+
+// ------------------------------------------------------------------ sorting for list screens
+type SortVal = string | number | boolean | null | undefined;
+export type Accessors<T> = Record<string, (r: T) => SortVal>;
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+function cmp(a: SortVal, b: SortVal): number {
+  const an = a === null || a === undefined || a === "";
+  const bn = b === null || b === undefined || b === "";
+  if (an || bn) return an === bn ? 0 : an ? 1 : -1; // empty values always last
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
+  return collator.compare(String(a), String(b));
+}
+
+/**
+ * Click-to-sort for any table. `th(key, label)` renders a sortable header; `rows` is the sorted list.
+ * Click once for ascending, again for descending, a third time to go back to the default order.
+ */
+export function useSort<T>(rows: T[] | null | undefined, acc: Accessors<T>, initial?: { key: string; dir?: "asc" | "desc" }) {
+  const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(initial ? { key: initial.key, dir: initial.dir ?? "asc" } : null);
+  const sorted = useMemo(() => {
+    const list = rows ?? [];
+    const f = sort ? acc[sort.key] : undefined;
+    if (!sort || !f) return list;
+    const m = sort.dir === "asc" ? 1 : -1;
+    // Empty values stay last in both directions.
+    return [...list].sort((x, y) => {
+      const a = f(x), b = f(y);
+      const ae = a === null || a === undefined || a === "";
+      const be = b === null || b === undefined || b === "";
+      if (ae || be) return ae === be ? 0 : ae ? 1 : -1;
+      return m * cmp(a, b);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, sort]);
+  const click = (key: string) =>
+    setSort((cur) => (!cur || cur.key !== key ? { key, dir: "asc" } : cur.dir === "asc" ? { key, dir: "desc" } : initial ? { key: initial.key, dir: initial.dir ?? "asc" } : null));
+  const th = (key: string, label: ReactNode, className = "") => {
+    const on = sort?.key === key;
+    return (
+      <th
+        className={`sortable ${on ? "sorted" : ""} ${className}`.trim()}
+        onClick={() => click(key)}
+        aria-sort={on ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
+        tabIndex={0}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), click(key))}
+        title="Click to sort"
+      >
+        {label}
+        <span className="sort-ind" aria-hidden>{on ? (sort!.dir === "asc" ? "▲" : "▼") : ""}</span>
+      </th>
+    );
+  };
+  return { rows: sorted, th, sort };
+}
+
+/** Wrap a table: `<Sorted rows={list} acc={{name: r => r.name}}>{(S) => <table>…{S.th("name","Name")}…{S.rows.map(…)}</table>}</Sorted>` */
+export function Sorted<T>(props: { rows: T[]; acc: Accessors<T>; initial?: { key: string; dir?: "asc" | "desc" }; children: (s: ReturnType<typeof useSort<T>>) => ReactNode }) {
+  const s = useSort(props.rows, props.acc, props.initial);
+  return <>{props.children(s)}</>;
 }
