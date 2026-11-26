@@ -132,6 +132,8 @@ pub fn for_request(r: &Request) -> &'static str {
         Request::K8sPodDelete { .. } | Request::K8sRolloutRestart { .. } | Request::K8sScale { .. } | Request::K8sNodeCordon { .. } | Request::K8sCronJobTrigger { .. } => K8S_CONTROL,
         Request::K8sResources { .. } | Request::K8sNodeDetail { .. } | Request::K8sNamespaceUsage => K8S_VIEW,
         Request::ServicesList => SERVICES_VIEW,
+        Request::ScheduleList => SERVICES_VIEW,
+        Request::ScheduleAction { .. } => SERVICES_CONTROL,
         Request::PgOverview | Request::PgActivity => POSTGRES_VIEW,
         Request::PgBackend { .. } => POSTGRES_CONTROL,
         Request::ServiceAction { .. } => SERVICES_CONTROL,
@@ -166,6 +168,7 @@ pub fn is_mutating(r: &Request) -> bool {
             | Request::K8sCronJobTrigger { .. }
             | Request::ServiceAction { .. }
             | Request::PgBackend { .. }
+            | Request::ScheduleAction { .. }
             | Request::DockerStackAction { .. }
             | Request::SelfUpdate { .. }
     )

@@ -1,9 +1,10 @@
 #!/bin/sh
 # MonitorLab agent installer for Linux and macOS (served by the hub at /download/install.sh).
+# Upgrade an installed agent in place (keeps its enrollment): add --upgrade, no token needed.
 # Usage: curl -fsSL https://HUB/download/install.sh | sudo sh -s -- --hub https://HUB --token TOKEN [--fingerprint FP] [--pin sha256//...]
 set -eu
 
-HUB=""; TOKEN=""; FP=""; PIN=""
+HUB=""; TOKEN=""; FP=""; PIN=""; UPGRADE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub) HUB="$2"; shift 2 ;;
@@ -11,11 +12,17 @@ while [ $# -gt 0 ]; do
     --token=*) TOKEN="${1#--token=}"; shift ;;
     --fingerprint) FP="$2"; shift 2 ;;
     --pin) PIN="$2"; shift 2 ;;
+    --upgrade) UPGRADE=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
-if [ -z "$HUB" ] || [ -z "$TOKEN" ]; then
+if [ "$UPGRADE" = "1" ] && [ -z "$HUB" ]; then
+  for c in /etc/monitorlab/agent.toml "/Library/Application Support/MonitorLab/agent.toml"; do
+    [ -r "$c" ] && HUB=$(sed -n 's/^hub_url *= *"\(.*\)"/\1/p' "$c" | head -1) && break
+  done
+fi
+if [ -z "$HUB" ] || { [ "$UPGRADE" != "1" ] && [ -z "$TOKEN" ]; }; then
   echo "usage: install.sh --hub URL --token TOKEN [--fingerprint FP] [--pin sha256//...]" >&2
   exit 1
 fi
@@ -51,7 +58,9 @@ else
 fi
 chmod 0755 "$DEST"
 
-if [ -n "$FP" ]; then
+if [ "$UPGRADE" = "1" ]; then
+  "$DEST" upgrade
+elif [ -n "$FP" ]; then
   "$DEST" install --hub "$HUB" --token="$TOKEN" --fingerprint "$FP"
 else
   "$DEST" install --hub "$HUB" --token="$TOKEN"

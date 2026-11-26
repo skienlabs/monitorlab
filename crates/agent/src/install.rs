@@ -20,6 +20,13 @@ pub struct InstallArgs {
 /// Enroll and write the config file. Returns the config path.
 pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
     let path = args.config.clone().unwrap_or_else(default_config_path);
+    if args.token.is_empty() {
+        // Upgrade: keep the existing enrollment and only reinstall the binary and service.
+        anyhow::ensure!(path.exists(), "no existing configuration at {}; this server has not been installed yet", path.display());
+        AgentConfig::load(&path).context("the existing configuration is not readable")?;
+        println!("Keeping the existing enrollment ({}).", path.display());
+        return Ok(path);
+    }
     let (agent_id, secret, name) = crate::conn::enroll(&args.hub, &args.token, args.fingerprint.as_deref()).await?;
     let cfg = AgentConfig {
         hub_url: args.hub.trim_end_matches('/').to_string(),

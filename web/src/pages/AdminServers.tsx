@@ -24,6 +24,34 @@ interface Token {
   expires_at: number;
 }
 
+/** One-time command for agents that cannot update themselves yet (older than 1.3). Keeps the server's enrollment. */
+function UpgradeSteps({ s, info }: { s: Server; info: HubInfo }) {
+  const hub = (info.public_url || location.origin).replace(/\/$/, "");
+  const pin = info.self_signed ? info.spki_pin : null;
+  const os = s.hello?.os;
+  const unix = `curl -fsSL ${pin ? `-k --pinnedpubkey '${pin}' ` : ""}${hub}/download/install.sh | sudo sh -s -- --upgrade --hub ${hub}${pin ? ` \\\n  --pin '${pin}'` : ""}`;
+  const win = `.\\monitorlab-agent-windows-amd64.exe upgrade`;
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="small">
+        This agent ({s.hello ? `v${s.hello.agent_version}` : "unknown version"}) is older than the self-update feature, so it cannot replace itself. Run this <b>once</b> on <b>{s.name}</b>. It keeps the existing enrollment and settings (no new token) and restarts the agent. From then on, updates are done from the hub.
+      </div>
+      {os === "windows" ? (
+        <>
+          <ol className="small" style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+            <li>Download <a href="/download/monitorlab-agent-windows-amd64.exe">monitorlab-agent-windows-amd64.exe</a> to the server.</li>
+            <li>Open <b>PowerShell as Administrator</b> in that folder and run:</li>
+          </ol>
+          <CodeBlock>{win}</CodeBlock>
+        </>
+      ) : (
+        <CodeBlock>{unix}</CodeBlock>
+      )}
+      <div className="small faint">Works on Linux (systemd), macOS and Windows. The command is safe to repeat.</div>
+    </div>
+  );
+}
+
 function InstallSteps({ t, info }: { t: Token; info: HubInfo }) {
   const [os, setOs] = useState<"linux" | "macos" | "windows">("linux");
   const hub = (info.public_url || location.origin).replace(/\/$/, "");
@@ -86,6 +114,7 @@ export function AdminServers() {
   const [busy, setBusy] = useState(false);
   const [token, setToken] = useState<Token | null>(null);
   const [rename, setRename] = useState<Server | null>(null);
+  const [upgrade, setUpgrade] = useState<Server | null>(null);
   const [newName, setNewName] = useState("");
   const toast = useToast();
   const confirm = useConfirm();
@@ -220,7 +249,9 @@ export function AdminServers() {
                             <CloudDownload size={14} /> Update
                           </button>
                         ) : (
-                          <span className="chip warn" title="This agent predates self-update: re-run the installer on the server once (Add server → copy the command)">reinstall to update</span>
+                          <button className="btn sm tonal" style={{ marginTop: 4 }} onClick={() => setUpgrade(s)} title="This agent predates self-update: run one command on the server, then it updates from the hub">
+                            <CloudDownload size={14} /> Update (one-time command)
+                          </button>
                         )}
                       </div>
                     )}
@@ -292,6 +323,12 @@ export function AdminServers() {
             <input className="input" autoFocus placeholder="e.g. prod-api-01" value={name} maxLength={64} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && name.trim() && create()} />
             <span className="hint">You will get a one-time install command for Linux or Windows.</span>
           </div>
+        </Dialog>
+      )}
+
+      {upgrade && info && (
+        <Dialog wide title={`Update the agent on ${upgrade.name}`} onClose={() => setUpgrade(null)} footer={<button className="btn filled" onClick={() => setUpgrade(null)}>Done</button>}>
+          <UpgradeSteps s={upgrade} info={info} />
         </Dialog>
       )}
 

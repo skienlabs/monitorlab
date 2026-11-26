@@ -33,6 +33,11 @@ enum Cmd {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Reinstall this binary as the service while keeping the existing enrollment (no token needed).
+    Upgrade {
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Enroll with the hub and only write the config file.
     Enroll {
         #[arg(long)]
@@ -100,6 +105,9 @@ fn main() -> Result<()> {
         }
         Cmd::Install { hub, token, fingerprint, config } => {
             runtime()?.block_on(monitorlab_agent::install::install(InstallArgs { hub, token, fingerprint, config }))
+        }
+        Cmd::Upgrade { config } => {
+            runtime()?.block_on(monitorlab_agent::install::install(InstallArgs { hub: String::new(), token: String::new(), fingerprint: None, config }))
         }
         Cmd::Enroll { hub, token, fingerprint, config } => {
             runtime()?.block_on(monitorlab_agent::install::enroll_and_save(&InstallArgs { hub, token, fingerprint, config }))?;

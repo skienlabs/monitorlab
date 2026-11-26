@@ -241,7 +241,8 @@ CPU and memory figures come from metrics-server, which k3s installs by default. 
 - **Per-container history**: CPU and memory over days (raw 3 days, 15-minute rollups for 30 days).
 - **Alerts**: per-server thresholds, maintenance windows that mute alerts, repeat reminders, failed-service alerts.
 - **Uptime**: HTTP and TCP monitors with keyword checks, response time, uptime percentages and SSL certificate expiry warnings.
-- **Agent self-update**: the hub can update agents (button, or automatically). Agents older than 1.3 need the installer run once. Linux installs keep the binary in `/opt/monitorlab/bin`.
+- **Agent self-update**: the hub can update agents (button, or automatically). Agents older than 1.3 cannot do this yet; for them the Update button in Servers & agents shows a one-time command (`curl … /download/install.sh | sudo sh -s -- --upgrade --hub …`, or `monitorlab-agent upgrade` on Windows) that keeps the enrollment and needs no token.
+- **Scheduled tasks**: a Scheduled tab per server with cron jobs (system crontabs, `/etc/cron.d`, `cron.daily` scripts; user crontabs when the agent runs as root), systemd timers and Windows scheduled tasks. Shows schedule in plain language, next runs, last run and result, the command, and the job's logs (timer service journal, cron lines from the journal, Task Scheduler log). Timers and Windows tasks can be run now, enabled or disabled. Linux installs keep the binary in `/opt/monitorlab/bin`.
 - **macOS agent**: `curl ... install.sh | sudo sh` works on a Mac (launchd service, Docker Desktop / OrbStack / Colima sockets). GitHub's hosted macOS runners are not available to this account, so build the agent on the Mac and upload it to the hub: `HUB=https://your-hub EMAIL=you@example.com ./deploy/build-macos-agent.sh`. Uploaded binaries live in the hub's data volume and survive redeploys; agents on Macs then update themselves like any other. (Alternatively register the Mac as a self-hosted runner and set the repository variable `MAC_RUNNER=true`.)
 - **PostgreSQL**: connections, databases (size, commits, rollbacks, cache hit, deadlocks), replication, longest transaction and a live Sessions view with cancel / terminate. Add a read-only role and the connection to `agent.toml`:
 
@@ -281,7 +282,7 @@ pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 162 checks (188 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 172 checks (198 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 

@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { BellRing, Wrench, Box, Boxes, ChevronRight, Cog, Layers3, ScrollText, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
+import { CalendarClock, BellRing, Wrench, Box, Boxes, ChevronRight, Cog, Layers3, ScrollText, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Metrics, Server } from "../types";
@@ -11,6 +11,7 @@ import { bytes, dateTime, duration, pct, rate, ratio } from "../format";
 import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from "./DockerTabs";
 import { MssqlTab } from "./MssqlTab";
 import { PostgresTab } from "./PostgresTab";
+import { ScheduleTab } from "./Schedule";
 import { IisTab } from "./IisTab";
 import { KubernetesTab } from "./K8sTab";
 import { StacksTab } from "./Stacks";
@@ -378,6 +379,7 @@ export function ServerPage() {
       { key: "cleanup", label: "Storage & cleanup", icon: <Sparkles size={17} />, show: !!caps?.docker && can("docker.view") },
       { key: "k8s", label: "Kubernetes", icon: <Boxes size={17} />, show: !!caps?.kubernetes && can("k8s.view") },
       { key: "services", label: "Services", icon: <Cog size={17} />, show: !!caps?.services && can("services.view") },
+      { key: "schedule", label: "Scheduled", icon: <CalendarClock size={17} />, show: !!caps?.schedule && can("services.view") },
       { key: "syslogs", label: s?.hello?.os === "windows" ? "Event Log" : "System logs", icon: <ScrollText size={17} />, show: !!caps?.system_logs && can("logs.view") },
       { key: "alerts", label: "Alerts", icon: <BellRing size={17} />, show: true },
       { key: "postgres", label: "PostgreSQL", icon: <Database size={17} />, show: !!caps?.postgres && can("postgres.view") },
@@ -466,6 +468,7 @@ export function ServerPage() {
         </div>
       )}
       {tab === "services" && <ServicesTab s={s} />}
+      {tab === "schedule" && <ScheduleTab s={s} />}
       {tab === "syslogs" && <SystemLogsTab s={s} />}
     </div>
   );

@@ -129,7 +129,7 @@ class Hook(BaseHTTPRequestHandler):
         pass
 
 
-def v13_checks(hub, admin, sid):
+def v13_checks(hub, admin, sid, agent_bin=None):
     import http.server, threading, socket, time as _t
     import requests as rq
 
@@ -208,6 +208,51 @@ def v13_checks(hub, admin, sid):
     code, d = admin.req("DELETE", f"/servers/{sid}/alert-rules")
     check("reset per-server rules", code == 200 and admin.get(f"/servers/{sid}/alert-rules")[1].get("custom") is False, (code, d))
 
+
+    # Scheduled tasks: a cron file dropped into /etc/cron.d must show up with parsed fields and next runs.
+    cron_path = "/etc/cron.d/monitorlab-e2e"
+    cron_text = "# e2e\nSHELL=/bin/sh\n*/15 3 * * 1 root /usr/local/bin/e2e-nightly.sh --full >/dev/null 2>&1\n@reboot nobody /bin/true\n"
+    wrote = False
+    try:
+        os.makedirs("/etc/cron.d", exist_ok=True)
+        with open(cron_path, "w") as f:
+            f.write(cron_text)
+        wrote = True
+    except OSError:
+        r = subprocess.run(["sudo", "-n", "tee", cron_path], input=cron_text, capture_output=True, text=True)
+        wrote = r.returncode == 0
+    if not wrote:
+        print("  SKIP  scheduled-task checks (cannot write /etc/cron.d here)")
+    else:
+        try:
+            ok = False
+            for _ in range(2):  # the hub-local agent caches nothing, but give the file system a moment
+                code, sl = admin.post(f"/servers/{sid}/rpc", {"op": "schedule_list"})
+                items = sl.get("items", []) if code == 200 else []
+                row = next((i for i in items if "e2e-nightly.sh" in i.get("command", "")), None)
+                if row:
+                    ok = True
+                    break
+                time.sleep(1)
+            check("schedule list includes the cron job", ok, (code, str(sl)[:300]))
+            if row:
+                check("cron fields parsed (user, command, source)", row["user"] == "root" and row["command"].startswith("/usr/local/bin/e2e-nightly.sh --full") and "monitorlab-e2e" in row["source"], row)
+                check("cron next runs are computed", len(row["next_runs"]) == 5 and row["next_run"] > time.time() * 1000, row)
+                check("cron summary is plain language", row["schedule"] == "*/15 3 * * 1", row)
+                ts = [t / 1000 for t in row["next_runs"]]
+                check("every next run is a Monday between 03:00 and 03:45", all(time.gmtime(t).tm_min % 15 == 0 for t in ts) and ts == sorted(ts), ts)
+            boot = next((i for i in items if i.get("schedule") == "@reboot" and i.get("user") == "nobody"), None)
+            check("@reboot entries are listed without a next run", boot is not None and boot.get("next_run") is None, boot)
+            code, d = admin.post(f"/servers/{sid}/rpc", {"op": "schedule_action", "name": "x", "action": "start"})
+            check("task actions are refused where unsupported", code != 200, (code, d))
+            code, d = admin.post(f"/servers/{sid}/rpc", {"op": "schedule_list"})
+            check("schedule list has a platform and notes list", code == 200 and "platform" in d and isinstance(d.get("notes"), list), str(d)[:200])
+        finally:
+            try:
+                os.remove(cron_path)
+            except OSError:
+                subprocess.run(["sudo", "-n", "rm", "-f", cron_path], capture_output=True)
+
     # History and update settings.
     code, h = admin.get(f"/servers/{sid}/usage-history?kind=container&name=x&range=6h")
     check("container usage history endpoint answers", code == 200, (code, str(h)[:200]))
@@ -217,6 +262,10 @@ def v13_checks(hub, admin, sid):
     check("agent upload rejects files that are not binaries", r.status_code == 400, r.status_code)
     r = admin.s.put(hub + "/api/agent-binaries/monitorlab-agent-macos-arm64", data=b"x" * 2_000_000, headers={"content-type": "application/octet-stream"})
     check("agent upload needs the CSRF header", r.status_code == 403, r.status_code)
+    r = rq.get(hub + "/download/install.sh", verify=False)
+    check("installer script supports --upgrade", r.status_code == 200 and "--upgrade" in r.text and "upgrade" in r.text, r.status_code)
+    up = subprocess.run([agent_bin, "upgrade", "--config", "/tmp/e2e-no-such-config.toml"], capture_output=True, text=True) if agent_bin else None
+    check("agent upgrade without an existing enrollment is refused", up is None or (up.returncode != 0 and ("no existing configuration" in up.stderr or "must be run as root" in up.stderr)), up and up.stderr[-200:])
     code, u = admin.get("/agent-updates")
     check("agent update settings readable", code == 200 and "auto_update" in u and u.get("hub_version"), (code, u))
     code, d = admin.req("PUT", "/agent-updates", {"auto_update": False})
@@ -688,7 +737,7 @@ def main():
             k8s_checks(hub, admin, sid, a.k8s_mock_dir)
 
         section("v1.3: uptime, maintenance, per-server rules, web app")
-        v13_checks(hub, admin, sid)
+        v13_checks(hub, admin, sid, a.agent_bin)
 
         section("Audit")
         code, d = admin.get("/audit?limit=200")

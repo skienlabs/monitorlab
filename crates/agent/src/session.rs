@@ -132,6 +132,7 @@ impl Agent {
         let logs_ok = self.services.logs_available().await;
         let can_update = self.opts.update.is_some();
         let pg_ok = self.postgres.configured();
+        let schedule_ok = services_ok || cfg!(windows) || std::path::Path::new(&crate::util::host_path(self.opts.host_root.as_deref(), "/etc/crontab")).exists() || std::path::Path::new(&crate::util::host_path(self.opts.host_root.as_deref(), "/etc/cron.d")).is_dir();
         let mssql = self.mssql.clone();
         let iis = self.iis.clone();
         let col = self.collector.clone();
@@ -148,6 +149,7 @@ impl Agent {
                 system_logs: logs_ok,
                 self_update: can_update,
                 postgres: pg_ok,
+                schedule: schedule_ok,
             };
             let c = col.lock().unwrap_or_else(|e| e.into_inner());
             c.hello(caps, interval)
@@ -335,6 +337,8 @@ impl Agent {
             Request::K8sNamespaceUsage => self.kube()?.namespace_usage().await,
             Request::K8sCronJobTrigger { namespace, name } => self.kube()?.trigger_cronjob(&namespace, &name).await,
             Request::ServicesList => self.services.list().await,
+            Request::ScheduleList => crate::schedule::list(&self.services, self.opts.host_root.as_deref()).await,
+            Request::ScheduleAction { name, action } => self.services.task_action(&name, action).await,
             Request::PgOverview => self.postgres.overview().await,
             Request::PgActivity => self.postgres.activity().await,
             Request::PgBackend { pid, kind } => self.postgres.backend(pid, kind).await,
@@ -418,9 +422,9 @@ impl Agent {
             }
             StreamRequest::StackLogs { project, tail, since } => self.docker()?.stream_stack_logs(&project, tail, since, sid, out).await,
             #[cfg(target_os = "linux")]
-            StreamRequest::SystemLogs { unit, log: _, priority, tail, since, follow } => self.services.stream_logs(unit, priority, tail, since, follow, sid, out).await,
+            StreamRequest::SystemLogs { unit, log: _, priority, tail, since, follow, grep } => self.services.stream_logs(unit, priority, tail, since, follow, grep, sid, out).await,
             #[cfg(windows)]
-            StreamRequest::SystemLogs { unit, log, priority, tail, since, follow } => self.services.stream_logs(log, unit, priority, tail, since, follow, sid, out).await,
+            StreamRequest::SystemLogs { unit, log, priority, tail, since, follow, grep } => self.services.stream_logs(log, unit, priority, tail, since, follow, grep, sid, out).await,
             #[cfg(not(any(target_os = "linux", windows)))]
             StreamRequest::SystemLogs { .. } => Err(anyhow!("system logs are not supported on this platform")),
             StreamRequest::K8sPodExec { namespace, name, container, cmd, cols, rows } => {

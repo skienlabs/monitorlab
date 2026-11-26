@@ -97,6 +97,9 @@ pub struct Capabilities {
     /// A PostgreSQL connection is configured in agent.toml.
     #[serde(default)]
     pub postgres: bool,
+    /// Cron jobs, systemd timers or Windows scheduled tasks can be listed.
+    #[serde(default)]
+    pub schedule: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +448,8 @@ pub enum Request {
     /// Services: systemd units (Linux) or Windows services.
     ServicesList,
     ServiceAction { name: String, action: ServiceActionKind },
+    ScheduleList,
+    ScheduleAction { name: String, action: ServiceActionKind },
     PgOverview,
     PgActivity,
     PgBackend { pid: i32, kind: PgBackendKind },
@@ -517,6 +522,8 @@ impl Request {
             Request::K8sCronJobTrigger { .. } => "k8s_cronjob_trigger",
             Request::ServicesList => "services_list",
             Request::ServiceAction { .. } => "service_action",
+            Request::ScheduleList => "schedule_list",
+            Request::ScheduleAction { .. } => "schedule_action",
             Request::PgOverview => "pg_overview",
             Request::PgActivity => "pg_activity",
             Request::PgBackend { .. } => "pg_backend",
@@ -631,6 +638,9 @@ pub enum StreamRequest {
         since: Option<i64>,
         #[serde(default = "default_true")]
         follow: bool,
+        /// Only lines containing this text (used to follow one cron job or one scheduled task).
+        #[serde(default)]
+        grep: Option<String>,
     },
     K8sPodExec {
         namespace: String,
