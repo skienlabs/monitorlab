@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CircleCheck, CirclePlay, CircleStop, FileText, MoreVertical, Power, PowerOff, RotateCcw, ScrollText, ShieldAlert, X } from "lucide-react";
 import { rpc } from "../api";
 import { useAuth } from "../auth";
@@ -37,6 +38,11 @@ export function ServicesTab({ s }: { s: Server }) {
   const [q, setQ] = useState("");
   const [f, setF] = useLocalStorage<"running" | "failed" | "all">(`monitorlab.svc.filter`, "running");
   const [logsOf, setLogsOf] = useState<string | null>(null);
+  const [params] = useSearchParams();
+  useEffect(() => {
+    if (params.get("f") === "failed") setF("failed");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { data, error, loading, reload } = usePoll(() => rpc<{ platform: string; services: Svc[] }>(s.id, { op: "services_list" }), [s.id], 15_000);
   const all = data?.services ?? [];
   const list = useMemo(() => {
@@ -55,7 +61,7 @@ export function ServicesTab({ s }: { s: Server }) {
   const act = (svc: Svc, action: string, label: string, danger = false) =>
     confirm({
       title: `${label} ${svc.name}?`,
-      body: action === "disable" ? "It will no longer start at boot." : action === "enable" ? "It will start automatically at boot." : `${svc.description || svc.name}`,
+      body: action === "reset_failed" ? "Forgets the failed state so it stops raising an alert. It does not fix the cause: check its logs first." : action === "disable" ? "It will no longer start at boot." : action === "enable" ? "It will start automatically at boot." : `${svc.description || svc.name}`,
       confirm: label,
       danger,
       action: () => rpc(s.id, { op: "service_action", name: svc.name, action }).finally(reload),
@@ -67,6 +73,25 @@ export function ServicesTab({ s }: { s: Server }) {
       <Toolbar onRefresh={reload} loading={loading}>
         <SearchBox value={q} onChange={setQ} placeholder={windows ? "Filter Windows services" : "Filter systemd services"} />
         <Seg value={f} onChange={setF} options={[{ value: "running", label: `Running ${running}` }, { value: "failed", label: `Failed ${failed}` }, { value: "all", label: `All ${all.length}` }]} />
+        {!windows && failed > 0 && can("services.control") && (
+          <button
+            className="btn sm tonal"
+            onClick={() =>
+              confirm({
+                title: `Clear the failed state of ${failed} unit(s)?`,
+                body: "They stop raising an alert. This does not fix what made them fail: check each one's logs first.",
+                confirm: "Clear all",
+                action: async () => {
+                  for (const x of all.filter((u) => u.active === "failed")) await rpc(s.id, { op: "service_action", name: x.name, action: "reset_failed" });
+                  reload();
+                },
+                success: "Failed state cleared",
+              })
+            }
+          >
+            <CircleCheck size={15} /> Clear all failed
+          </button>
+        )}
       </Toolbar>
       {logsOf && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -119,6 +144,7 @@ export function ServicesTab({ s }: { s: Server }) {
                       )}
                       {can("services.control") && (
                         <Menu trigger={<MoreVertical size={17} />}>
+                          {x.active === "failed" && !windows && <button onClick={() => act(x, "reset_failed", "Clear failed state")}><CircleCheck size={17} /> Clear failed state</button>}
                           {x.active !== "active" && <button onClick={() => act(x, "start", "Start")}><CirclePlay size={17} /> Start</button>}
                           {x.active === "active" && <button onClick={() => act(x, "restart", "Restart")}><RotateCcw size={17} /> Restart</button>}
                           {x.active === "active" && !windows && <button onClick={() => act(x, "reload", "Reload")}><RotateCcw size={17} /> Reload config</button>}

@@ -35,6 +35,8 @@ const LABELS: Record<string, string> = {
   server_token_created: "Issued install token",
   agent_enrolled: "Agent enrolled",
   container_exec: "Opened container terminal",
+  pod_exec: "Opened pod terminal",
+  host_shell: "Opened server shell",
   docker_container_action: "Container action",
   docker_container_remove: "Deleted container",
   docker_image_remove: "Deleted image",

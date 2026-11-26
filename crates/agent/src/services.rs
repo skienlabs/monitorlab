@@ -141,7 +141,7 @@ mod imp {
                 files.into_iter().filter_map(|(p, st)| p.rsplit('/').next().map(|n| (n.to_string(), st))).collect();
             let mut seen = std::collections::HashSet::new();
             let mut rows = Vec::new();
-            for (name, desc, load, active, sub, _, path, _, _, _) in units.into_iter().filter(|u| u.0.ends_with(".service")) {
+            for (name, desc, load, active, sub, _, path, _, _, _) in units.into_iter().filter(|u| u.0.ends_with(".service") || u.3 == "failed") {
                 seen.insert(name.clone());
                 let mut row = json!({
                     "name": name, "description": desc, "load": load, "active": active, "sub": sub,
@@ -312,6 +312,7 @@ mod imp {
                 ServiceActionKind::Stop => job("StopUnit").await.map(|_| ()),
                 ServiceActionKind::Restart => job("RestartUnit").await.map(|_| ()),
                 ServiceActionKind::Reload => job("ReloadUnit").await.map(|_| ()),
+                ServiceActionKind::ResetFailed => conn.call_method(Some(DEST), PATH, Some(MGR), "ResetFailedUnit", &(unit.as_str(),)).await.map(|_| ()),
                 ServiceActionKind::Enable => conn.call_method(Some(DEST), PATH, Some(MGR), "EnableUnitFiles", &(vec![unit.as_str()], false, false)).await.map(|_| ()),
                 ServiceActionKind::Disable => conn.call_method(Some(DEST), PATH, Some(MGR), "DisableUnitFiles", &(vec![unit.as_str()], false)).await.map(|_| ()),
             };
@@ -608,6 +609,7 @@ mod imp {
                 ServiceActionKind::Restart | ServiceActionKind::Reload => format!("Restart-Service -Name '{q}' -Force"),
                 ServiceActionKind::Enable => format!("Set-Service -Name '{q}' -StartupType Automatic"),
                 ServiceActionKind::Disable => format!("Set-Service -Name '{q}' -StartupType Disabled"),
+                ServiceActionKind::ResetFailed => bail!("Windows has no failed state to clear: use Start or Restart"),
             };
             ps(&script).await?;
             Ok(json!({ "ok": true }))

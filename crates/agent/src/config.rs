@@ -30,6 +30,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub postgres: PostgresConfig,
     #[serde(default)]
+    pub shell: ShellConfig,
+    #[serde(default)]
     pub iis: IisConfig,
     #[serde(default)]
     pub kubernetes: K8sConfig,
@@ -53,6 +55,31 @@ pub struct DockerConfig {
 impl Default for DockerConfig {
     fn default() -> Self {
         Self { enabled: true, socket: None, history: true }
+    }
+}
+
+/// Interactive shell on this server, opened from the hub by users with the "Server shell" permission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellConfig {
+    #[serde(default = "shell_on")]
+    pub enabled: bool,
+}
+
+fn shell_on() -> bool {
+    true
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl ShellConfig {
+    /// For the hub's built-in agent: `MONITORLAB_HOST_SHELL=0` turns it off.
+    pub fn from_env() -> Self {
+        let off = std::env::var("MONITORLAB_HOST_SHELL").map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no")).unwrap_or(false);
+        Self { enabled: !off }
     }
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { CloudDownload, KeyRound, MoreVertical, Pencil, Plus, ServerCog, Trash2 } from "lucide-react";
-import { api } from "../api";
+import { CloudDownload, RotateCw, KeyRound, MoreVertical, Pencil, Plus, ServerCog, Trash2 } from "lucide-react";
+import { api, rpc } from "../api";
 import { useServers } from "../servers";
 import { CodeBlock, Dialog, Empty, Loading, Menu, Seg, Spinner, StatusChip, useConfirm, usePoll, useToast, Sorted } from "../components/ui";
 import { OsIcon } from "../components/OsIcon";
@@ -125,6 +125,15 @@ export function AdminServers() {
       body: `The agent downloads v${updates.data?.hub_version ?? "latest"} from this hub, checks it and restarts. Monitoring pauses for a few seconds.`,
       confirm: "Update",
       action: () => api<{ message: string }>(`/servers/${s.id}/update`, { method: "POST" }).then((r) => { toast(r.message); reload(); }),
+    });
+
+  const restartAgent = (s: Server) =>
+    confirm({
+      title: `Restart the agent on ${s.name}?`,
+      body: "Only the MonitorLab agent restarts, not the server or your containers. Monitoring pauses for a few seconds and it reconnects by itself.",
+      confirm: "Restart agent",
+      action: () => rpc(s.id, { op: "restart_agent" }).then(() => reload()),
+      success: "Agent restarting",
     });
 
   useEffect(() => {
@@ -269,6 +278,11 @@ export function AdminServers() {
                       <button onClick={() => { setRename(s); setNewName(s.name); }}>
                         <Pencil size={17} /> Rename
                       </button>
+                      {s.online && s.hello?.capabilities.restart && !s.is_local && (
+                        <button onClick={() => restartAgent(s)}>
+                          <RotateCw size={17} /> Restart agent
+                        </button>
+                      )}
                       {!s.is_local && (
                         <button onClick={() => newToken(s)}>
                           <KeyRound size={17} /> {s.enrolled ? "Re-install / rotate credentials" : "New install command"}

@@ -21,6 +21,7 @@ pub const ALERTS_MANAGE: &str = "alerts.manage";
 pub const K8S_VIEW: &str = "k8s.view";
 pub const K8S_CONTROL: &str = "k8s.control";
 pub const K8S_EXEC: &str = "k8s.exec";
+pub const SHELL_HOST: &str = "shell.host";
 pub const SERVICES_VIEW: &str = "services.view";
 pub const SERVICES_CONTROL: &str = "services.control";
 pub const POSTGRES_VIEW: &str = "postgres.view";
@@ -50,6 +51,7 @@ pub const CATALOG: &[PermInfo] = &[
     PermInfo { key: POSTGRES_CONTROL, group: "Operations", label: "Control PostgreSQL sessions", description: "Cancel queries and terminate connections", dangerous: true },
     PermInfo { key: SERVICES_CONTROL, group: "Operations", label: "Control services", description: "Start, stop, restart, enable and disable system services", dangerous: true },
     PermInfo { key: CONTAINERS_EXEC, group: "Operations", label: "Container terminal", description: "Open an interactive shell inside containers", dangerous: true },
+    PermInfo { key: SHELL_HOST, group: "Operations", label: "Server shell", description: "Open an interactive shell (bash / PowerShell) on the server itself. Full control of that machine, administrators only by default", dangerous: true },
     PermInfo { key: K8S_EXEC, group: "Operations", label: "Pod terminal", description: "Open an interactive shell inside Kubernetes pods", dangerous: true },
     PermInfo { key: CONTAINERS_DELETE, group: "Destructive", label: "Delete containers", description: "Remove containers", dangerous: true },
     PermInfo { key: DOCKER_CLEANUP, group: "Destructive", label: "Docker cleanup", description: "Delete images, volumes, networks; prune build cache", dangerous: true },
@@ -110,7 +112,9 @@ pub fn for_request(r: &Request) -> &'static str {
         | Request::DockerVolumes
         | Request::DockerNetworks
         | Request::DockerDiskUsage => DOCKER_VIEW,
-        Request::DockerContainerAction { .. } | Request::DockerContainerRename { .. } => CONTAINERS_CONTROL,
+        Request::DockerContainerAction { .. } | Request::DockerContainerRename { .. } | Request::DockerImagePull { .. } | Request::DockerVolumeCreate { .. } | Request::DockerNetworkCreate { .. } => CONTAINERS_CONTROL,
+        // A new container can mount host paths or run privileged: as powerful as a terminal.
+        Request::DockerContainerCreate { .. } => CONTAINERS_EXEC,
         // Recreating destroys the old container (its writable layer is lost).
         Request::DockerContainerRemove { .. } | Request::DockerContainerRecreate { .. } => CONTAINERS_DELETE,
         Request::DockerImageRemove { .. }
@@ -143,7 +147,7 @@ pub fn for_request(r: &Request) -> &'static str {
             monitorlab_common::StackAction::Redeploy | monitorlab_common::StackAction::PullRedeploy => CONTAINERS_DELETE,
             _ => CONTAINERS_CONTROL,
         },
-        Request::SelfUpdate { .. } => SERVERS_MANAGE,
+        Request::SelfUpdate { .. } | Request::RestartAgent => SERVERS_MANAGE,
     }
 }
 
@@ -155,6 +159,10 @@ pub fn is_mutating(r: &Request) -> bool {
             | Request::DockerContainerRemove { .. }
             | Request::DockerContainerRename { .. }
             | Request::DockerContainerRecreate { .. }
+            | Request::DockerImagePull { .. }
+            | Request::DockerContainerCreate { .. }
+            | Request::DockerVolumeCreate { .. }
+            | Request::DockerNetworkCreate { .. }
             | Request::DockerImageRemove { .. }
             | Request::DockerVolumeRemove { .. }
             | Request::DockerNetworkRemove { .. }
@@ -171,6 +179,7 @@ pub fn is_mutating(r: &Request) -> bool {
             | Request::ScheduleAction { .. }
             | Request::DockerStackAction { .. }
             | Request::SelfUpdate { .. }
+            | Request::RestartAgent
     )
 }
 
@@ -184,6 +193,7 @@ pub fn for_stream(r: &StreamRequest) -> &'static str {
         StreamRequest::MssqlLogFollow { .. } => LOGS_VIEW,
         StreamRequest::K8sPodLogs { .. } => LOGS_VIEW,
         StreamRequest::K8sPodExec { .. } => K8S_EXEC,
+        StreamRequest::HostShell { .. } => SHELL_HOST,
         StreamRequest::StackLogs { .. } => LOGS_VIEW,
         StreamRequest::SystemLogs { .. } => LOGS_VIEW,
     }
@@ -192,7 +202,7 @@ pub fn for_stream(r: &StreamRequest) -> &'static str {
 /// Seconds to wait for an agent reply.
 pub fn timeout_secs(r: &Request) -> u64 {
     match r {
-        Request::DockerPrune { .. } | Request::DockerImageRemove { .. } | Request::DockerContainerRecreate { .. } | Request::DockerStackAction { .. } | Request::SelfUpdate { .. } => 900,
+        Request::DockerPrune { .. } | Request::DockerImagePull { .. } | Request::DockerContainerCreate { .. } | Request::DockerImageRemove { .. } | Request::DockerContainerRecreate { .. } | Request::DockerStackAction { .. } | Request::SelfUpdate { .. } => 900,
         Request::DockerContainerAction { .. } | Request::DockerContainerRemove { .. } => 120,
         Request::DockerDiskUsage | Request::IisSiteAction { .. } | Request::IisAppPoolAction { .. } => 120,
         _ => 30,

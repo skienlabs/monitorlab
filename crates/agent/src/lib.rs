@@ -10,6 +10,7 @@ pub mod docker;
 pub mod hostnet;
 pub mod dockerauth;
 pub mod k8s;
+pub mod hostshell;
 pub mod schedule;
 pub mod services;
 pub mod update;

@@ -56,6 +56,29 @@ export function PodTerminal({ serverId, namespace, pod, containers }: { serverId
   );
 }
 
+/** Shell on the server itself: bash/sh/zsh, or PowerShell/cmd on Windows. */
+export function HostTerminal({ serverId, windows, hostName }: { serverId: string; windows: boolean; hostName: string }) {
+  const [shell, setShell] = useState("auto");
+  const options = windows
+    ? [["auto", "PowerShell"], ["pwsh", "PowerShell 7 (pwsh)"], ["cmd", "Command Prompt (cmd)"]]
+    : [["auto", "Auto (bash → sh)"], ["bash", "bash"], ["sh", "sh"], ["zsh", "zsh"]];
+  return (
+    <ExecTerminal
+      serverId={serverId}
+      deps={[shell]}
+      request={(cols, rows) => ({ kind: "host_shell", shell: shell === "auto" ? undefined : shell, cols, rows })}
+      where={hostName}
+      controls={
+        <select className="select" style={{ height: 36, width: 190 }} value={shell} onChange={(e) => setShell(e.target.value)} aria-label="Shell">
+          {options.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+      }
+    />
+  );
+}
+
 function ShellSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select className="select" style={{ height: 36, width: 160 }} value={value} onChange={(e) => onChange(e.target.value)} aria-label="Shell">

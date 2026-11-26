@@ -2,13 +2,14 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Box, ChevronDown, ChevronRight, CirclePause, CirclePlay, CircleStop, FileText, HardDrive, Layers, MoreVertical, Network, RefreshCw,
-  RotateCcw, Skull, SquareTerminal, Trash2, Sparkles, Hammer, Pause, Play, Zap, X, PencilLine, RefreshCcwDot,
+  RotateCcw, Skull, SquareTerminal, Trash2, Sparkles, Hammer, Pause, Play, Zap, X, PencilLine, RefreshCcwDot, Plus, Download,
 } from "lucide-react";
 import { openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Container, Server } from "../types";
 import { Dialog, Empty, ErrorBanner, Loading, Menu, SearchBox, Seg, Spinner, StateChip, useConfirm, usePoll, useToast, Sorted } from "../components/ui";
 import { ago, bytes, plural, shortId } from "../format";
+import { NewContainerDialog, NewNetworkDialog, NewVolumeDialog, PullImageDialog } from "./DockerCreate";
 
 export function Toolbar({ children, onRefresh, loading }: { children?: ReactNode; onRefresh: () => void; loading: boolean }) {
   return (
@@ -410,6 +411,7 @@ function ContainerRow({ c, s, actions, live, selected, onSelect, onRename }: { c
 }
 
 export function ContainersTab({ s }: { s: Server }) {
+  const [runNew, setRunNew] = useState(false);
   const { can } = useAuth();
   const { data, error, loading, reload } = usePoll(() => rpc<Container[]>(s.id, { op: "docker_containers" }), [s.id], 5000);
   const [q, setQ] = useState("");
@@ -464,8 +466,12 @@ export function ContainersTab({ s }: { s: Server }) {
 
   return (
     <div>
+      {runNew && <NewContainerDialog serverId={s.id} onClose={() => setRunNew(false)} onDone={reload} />}
       <Toolbar onRefresh={reload} loading={loading}>
         <SearchBox value={q} onChange={setQ} placeholder="Filter by name, image or stack" />
+        {can("containers.exec") && (
+          <button className="btn tonal sm" onClick={() => setRunNew(true)}><Plus size={16} /> Run container</button>
+        )}
         <Seg
           value={state}
           onChange={setState}
@@ -604,6 +610,7 @@ export function ImagesTab({ s }: { s: Server }) {
   const { data, error, loading, reload } = usePoll(() => rpc<Image[]>(s.id, { op: "docker_images" }), [s.id]);
   const [q, setQ] = useState("");
   const [f, setF] = useState<"all" | "unused" | "dangling">("all");
+  const [dlg, setDlg] = useState<null | "pull" | { run: string }>(null);
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return (data ?? [])
@@ -629,8 +636,11 @@ export function ImagesTab({ s }: { s: Server }) {
 
   return (
     <div>
+      {dlg === "pull" && <PullImageDialog serverId={s.id} onClose={() => setDlg(null)} onDone={reload} />}
+      {typeof dlg === "object" && dlg && <NewContainerDialog serverId={s.id} image={dlg.run} onClose={() => setDlg(null)} onDone={reload} />}
       <Toolbar onRefresh={reload} loading={loading}>
         <SearchBox value={q} onChange={setQ} placeholder="Filter by tag" />
+        {can("containers.control") && <button className="btn tonal sm" onClick={() => setDlg("pull")}><Download size={16} /> Pull image</button>}
         <Seg value={f} onChange={setF} options={[{ value: "all", label: `All ${data?.length ?? 0}` }, { value: "unused", label: `Unused ${unused.length}` }, { value: "dangling", label: "Dangling" }]} />
         {can("docker.cleanup") && unused.length > 0 && (
           <button
@@ -681,6 +691,11 @@ export function ImagesTab({ s }: { s: Server }) {
                 <td className="small muted nowrap">{ago(i.created * 1000)}</td>
                 <td className="small">{i.in_use ? i.used_by.join(", ") : <span className="chip">unused</span>}</td>
                 <td className="actions">
+                  {can("containers.exec") && i.tags[0] && !i.dangling && (
+                    <button className="icon-btn sm" onClick={() => setDlg({ run: i.tags[0] })} aria-label="Run a container from this image" title="Run a container from this image">
+                      <Play size={17} />
+                    </button>
+                  )}
                   {can("docker.cleanup") && (
                     <button className="icon-btn sm danger" onClick={() => remove(i)} aria-label="Delete image" title="Delete image">
                       <Trash2 size={17} />
@@ -717,6 +732,7 @@ export function VolumesTab({ s }: { s: Server }) {
   const { data, error, loading, reload } = usePoll(() => rpc<Volume[]>(s.id, { op: "docker_volumes" }), [s.id]);
   const [q, setQ] = useState("");
   const [f, setF] = useState<"all" | "unused">("all");
+  const [newVol, setNewVol] = useState(false);
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return (data ?? [])
@@ -730,8 +746,10 @@ export function VolumesTab({ s }: { s: Server }) {
 
   return (
     <div>
+      {newVol && <NewVolumeDialog serverId={s.id} onClose={() => setNewVol(false)} onDone={reload} />}
       <Toolbar onRefresh={reload} loading={loading}>
         <SearchBox value={q} onChange={setQ} placeholder="Filter volumes" />
+        {can("containers.control") && <button className="btn tonal sm" onClick={() => setNewVol(true)}><Plus size={16} /> New volume</button>}
         <Seg value={f} onChange={setF} options={[{ value: "all", label: `All ${data?.length ?? 0}` }, { value: "unused", label: `Unused ${unused}` }]} />
         {can("docker.cleanup") && unused > 0 && (
           <button
@@ -836,12 +854,15 @@ export function NetworksTab({ s }: { s: Server }) {
   const { can } = useAuth();
   const confirm = useConfirm();
   const { data, error, loading, reload } = usePoll(() => rpc<Net[]>(s.id, { op: "docker_networks" }), [s.id]);
+  const [newNet, setNewNet] = useState(false);
   if (!s.online) return <Empty icon={<Network size={26} />} title="Server is offline" />;
   if (!data && !error) return <Loading />;
   const unused = (data ?? []).filter((n) => !n.builtin && n.containers === 0).length;
   return (
     <div>
+      {newNet && <NewNetworkDialog serverId={s.id} onClose={() => setNewNet(false)} onDone={reload} />}
       <Toolbar onRefresh={reload} loading={loading}>
+        {can("containers.control") && <button className="btn tonal sm" onClick={() => setNewNet(true)}><Plus size={16} /> New network</button>}
         {can("docker.cleanup") && unused > 0 && (
           <button
             className="btn tonal sm"

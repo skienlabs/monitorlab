@@ -57,7 +57,7 @@ export interface Hello {
   total_memory: number;
   boot_time: number;
   ips: string[];
-  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean; kubernetes?: boolean; kubernetes_version?: string | null; services?: boolean; system_logs?: boolean; self_update?: boolean; postgres?: boolean; schedule?: boolean };
+  capabilities: { docker: boolean; docker_version: string | null; mssql: boolean; iis: boolean; kubernetes?: boolean; kubernetes_version?: string | null; services?: boolean; system_logs?: boolean; self_update?: boolean; postgres?: boolean; schedule?: boolean; host_shell?: boolean; restart?: boolean };
   interval_secs: number;
 }
 

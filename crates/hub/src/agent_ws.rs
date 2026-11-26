@@ -272,6 +272,7 @@ pub async fn start_local_agent(state: S) -> anyhow::Result<()> {
         docker_socket: None,
         mssql: Default::default(),
         postgres: monitorlab_agent::config::PostgresConfig::from_env(),
+        shell: monitorlab_agent::config::ShellConfig::from_env(),
         iis_enabled: Some(false),
         host_root: state.cfg.host_root.clone(),
         k8s: Default::default(),

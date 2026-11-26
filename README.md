@@ -149,10 +149,11 @@ Permissions (each agent request maps to exactly one, enforced on the hub):
 | `servers.view` | dashboards, metrics, charts, processes |
 | `docker.view` · `mssql.view` · `iis.view` | read-only views of those subsystems |
 | `logs.view` | container, pod, IIS and SQL Server logs |
-| `containers.control` | start / stop / restart / pause / kill |
+| `containers.control` | start / stop / restart / pause / kill, pull images, create volumes and networks |
 | `iis.control` | start / stop sites, recycle / start / stop app pools |
-| `containers.exec` | interactive terminal inside containers (audited) |
+| `containers.exec` | interactive terminal inside containers, and running new containers (a container can mount host folders, so this is as powerful as a shell) |
 | `containers.delete` | delete and recreate containers |
+| `shell.host` | interactive shell on the server itself: bash / sh / zsh, or PowerShell / cmd on Windows (audited, Administrator only by default) |
 | `k8s.view` | Kubernetes nodes, workloads, pods, services, events |
 | `k8s.control` | rolling restart, scale, delete pods, cordon / uncordon nodes |
 | `k8s.exec` | interactive terminal inside pods (audited) |
@@ -225,7 +226,12 @@ enabled = true
 [kubernetes]
 # enabled = true          # default: auto-detect
 # kubeconfig = "/etc/monitorlab/kubeconfig"
+
+[shell]
+# enabled = false         # turn the "Shell" tab off for this server (default: on)
 ```
+
+The hub's own agent honours `MONITORLAB_HOST_SHELL=0`.
 
 ## Kubernetes (k3s)
 
@@ -260,6 +266,10 @@ CPU and memory figures come from metrics-server, which k3s installs by default. 
   GRANT pg_monitor TO monitorlab;
   ```
   For the hub's own host set `MONITORLAB_PG_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_DATABASE` on the hub container. Alerts: unreachable (critical), connections above 90% of the limit, replica more than 5 minutes behind (warning). Permissions: `postgres.view`, `postgres.control`.
+- **Server shell**: a Shell tab (PowerShell on Windows) opens an interactive terminal on the server itself, next to the container and pod terminals. Needs the `shell.host` permission, which only Administrators have by default; every session is written to the audit log. The shell runs as the account the agent runs as: the unprivileged `monitorlab` user on Linux (use `sudo` rules or run the agent as root if you need more), root on macOS, LocalSystem on Windows. For the hub's own host the shell is inside the hub container. Windows (ConPTY) and macOS paths are compile-checked, not run in CI.
+- **Portainer-style creation**: pull an image, run a new container (ports, environment, volumes, restart policy, network, command), create volumes and networks, all from the Docker tabs, audited. Not covered: building images, deploying a new stack from a compose editor, registry management, app templates, Swarm.
+- **Failed services**: "Clear failed state" (systemd `reset-failed`) per unit or for all failed units, and a Review link from the warning banner. Failed `.path`, `.socket` and `.timer` units are listed too.
+- **Restart agent**: Servers & agents → ⋮ → Restart agent restarts only the agent process (its service manager starts it again). Not available for the hub's own agent.
 - **Install as an app**: the console is a progressive web app. Use the install button in the header (Chrome/Edge) or Add to Home Screen / Add to Dock (Safari).
 - **Sorting**: click any column header on list screens to sort ascending, descending, or back to the default.
 
@@ -282,7 +292,7 @@ pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 172 checks (198 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 196 checks (222 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 

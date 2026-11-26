@@ -227,7 +227,7 @@ impl DockerCtl {
     }
 
     /// Pull an image reference, using registry credentials from docker config files when present.
-    async fn pull(&self, reference: &str, host_root: Option<&str>) -> Result<()> {
+    pub async fn pull(&self, reference: &str, host_root: Option<&str>) -> Result<()> {
         let (image, tag) = split_reference(reference);
         let creds = crate::dockerauth::credentials_for(registry_of(reference), host_root);
         let d = self.d.clone().with_timeout(Duration::from_secs(1800));
@@ -454,6 +454,120 @@ impl DockerCtl {
             })
             .collect();
         Ok(Value::Array(out))
+    }
+
+    pub async fn create_volume(&self, name: &str) -> Result<Value> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+            bail!("volume names may only contain letters, digits, _ . -");
+        }
+        self.d.create_volume(bollard::volume::CreateVolumeOptions::<String> { name: name.to_string(), ..Default::default() }).await?;
+        Ok(json!({ "ok": true }))
+    }
+
+    pub async fn create_network(&self, name: &str, subnet: Option<String>) -> Result<Value> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+            bail!("network names may only contain letters, digits, _ . -");
+        }
+        let ipam = subnet.filter(|s| !s.trim().is_empty()).map(|s| bollard::models::Ipam {
+            config: Some(vec![bollard::models::IpamConfig { subnet: Some(s.trim().to_string()), ..Default::default() }]),
+            ..Default::default()
+        });
+        let r = self
+            .d
+            .create_network(bollard::network::CreateNetworkOptions::<String> { name: name.to_string(), driver: "bridge".into(), ipam: ipam.unwrap_or_default(), ..Default::default() })
+            .await?;
+        Ok(json!({ "ok": true, "id": r.id }))
+    }
+
+    /// `docker run -d` from the "Add container" form.
+    pub async fn create(&self, n: NewContainer, host_root: Option<&str>) -> Result<Value> {
+        let image = n.image.trim().to_string();
+        if image.is_empty() {
+            bail!("an image is required");
+        }
+        let present = self.d.inspect_image(&image).await.is_ok();
+        let mut pulled = false;
+        if n.pull || !present {
+            match self.pull(&image, host_root).await {
+                Ok(()) => pulled = true,
+                Err(e) if present => tracing::warn!("pull of {image} failed, using the local copy: {e:#}"),
+                Err(e) => return Err(e),
+            }
+        }
+        let mut bindings: HashMap<String, Option<Vec<bollard::models::PortBinding>>> = HashMap::new();
+        let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        for p in n.ports.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+            let (spec, proto) = p.split_once('/').unwrap_or((p, "tcp"));
+            if !matches!(proto, "tcp" | "udp" | "sctp") {
+                bail!("port '{p}': protocol must be tcp, udp or sctp");
+            }
+            let parts: Vec<&str> = spec.split(':').collect();
+            let (ip, host, cont) = match parts.as_slice() {
+                [c] => (None, None, *c),
+                [h, c] => (None, Some(*h), *c),
+                [ip, h, c] => (Some(*ip), Some(*h), *c),
+                _ => bail!("port '{p}': use host:container, ip:host:container or container"),
+            };
+            if cont.parse::<u16>().is_err() || host.map(|h| h.parse::<u16>().is_err()).unwrap_or(false) {
+                bail!("port '{p}': ports must be numbers");
+            }
+            let key = format!("{cont}/{proto}");
+            exposed.insert(key.clone(), HashMap::new());
+            bindings.entry(key).or_insert_with(|| Some(vec![])).as_mut().unwrap().push(bollard::models::PortBinding { host_ip: ip.map(String::from), host_port: host.map(String::from) });
+        }
+        for e in n.env.iter().filter(|e| !e.trim().is_empty()) {
+            if !e.contains('=') {
+                bail!("environment variable '{e}': use KEY=value");
+            }
+        }
+        for v in n.volumes.iter().filter(|v| !v.trim().is_empty()) {
+            if v.split(':').count() < 2 {
+                bail!("volume '{v}': use name-or-path:/container/path[:ro]");
+            }
+        }
+        let name = n.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(nm) = name {
+            if !nm.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+                bail!("container names may only contain letters, digits, _ . -");
+            }
+        }
+        let restart = match n.restart.as_deref().unwrap_or("") {
+            "" | "no" => None,
+            "always" => Some(bollard::models::RestartPolicyNameEnum::ALWAYS),
+            "unless-stopped" => Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
+            "on-failure" => Some(bollard::models::RestartPolicyNameEnum::ON_FAILURE),
+            other => bail!("unknown restart policy '{other}'"),
+        };
+        let host = bollard::models::HostConfig {
+            port_bindings: Some(bindings),
+            binds: Some(n.volumes.iter().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect()),
+            restart_policy: restart.map(|r| bollard::models::RestartPolicy { name: Some(r), maximum_retry_count: None }),
+            network_mode: n.network.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+            privileged: Some(n.privileged),
+            ..Default::default()
+        };
+        let config: bollard::container::Config<String> = bollard::container::Config {
+            image: Some(image.clone()),
+            env: Some(n.env.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect()),
+            cmd: n.cmd.filter(|c| !c.is_empty()),
+            exposed_ports: Some(exposed),
+            host_config: Some(host),
+            ..Default::default()
+        };
+        let created = self
+            .d
+            .create_container(name.map(|nm| CreateContainerOptions { name: nm.to_string(), platform: None }), config)
+            .await?;
+        if n.start {
+            if let Err(e) = self.d.start_container(&created.id, None::<StartContainerOptions<String>>).await {
+                // Leave nothing half-made behind (e.g. a host port that is already taken).
+                let _ = self.d.remove_container(&created.id, Some(RemoveContainerOptions { force: true, v: false, link: false })).await;
+                return Err(anyhow!("could not start it: {e}"));
+            }
+        }
+        Ok(json!({ "ok": true, "id": created.id, "pulled": pulled, "started": n.start }))
     }
 
     pub async fn remove_volume(&self, name: &str) -> Result<Value> {
@@ -1133,6 +1247,21 @@ impl DockerCtl {
             }
         }
     }
+}
+
+/// Settings of the "Add container" form.
+pub struct NewContainer {
+    pub image: String,
+    pub name: Option<String>,
+    pub ports: Vec<String>,
+    pub env: Vec<String>,
+    pub volumes: Vec<String>,
+    pub restart: Option<String>,
+    pub network: Option<String>,
+    pub cmd: Option<Vec<String>>,
+    pub privileged: bool,
+    pub start: bool,
+    pub pull: bool,
 }
 
 async fn flush(out: &mpsc::Sender<AgentMsg>, sid: u64, batch: &mut Vec<LogLine>) -> Result<()> {

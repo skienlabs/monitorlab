@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { CalendarClock, BellRing, Wrench, Box, Boxes, ChevronRight, Cog, Layers3, ScrollText, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu } from "lucide-react";
+import { CalendarClock, BellRing, Wrench, Box, Boxes, ChevronRight, Cog, Layers3, ScrollText, Database, Globe, HardDrive, Layers, Network, RefreshCw, Sparkles, Activity, Cpu, SquareTerminal } from "lucide-react";
 import { api, openStream, rpc } from "../api";
 import { useAuth } from "../auth";
 import type { Metrics, Server } from "../types";
@@ -12,6 +12,7 @@ import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from ".
 import { MssqlTab } from "./MssqlTab";
 import { PostgresTab } from "./PostgresTab";
 import { ScheduleTab } from "./Schedule";
+import { HostTerminal } from "../components/Terminal";
 import { IisTab } from "./IisTab";
 import { KubernetesTab } from "./K8sTab";
 import { StacksTab } from "./Stacks";
@@ -382,6 +383,7 @@ export function ServerPage() {
       { key: "schedule", label: "Scheduled", icon: <CalendarClock size={17} />, show: !!caps?.schedule && can("services.view") },
       { key: "syslogs", label: s?.hello?.os === "windows" ? "Event Log" : "System logs", icon: <ScrollText size={17} />, show: !!caps?.system_logs && can("logs.view") },
       { key: "alerts", label: "Alerts", icon: <BellRing size={17} />, show: true },
+      { key: "shell", label: s?.hello?.os === "windows" ? "PowerShell" : "Shell", icon: <SquareTerminal size={17} />, show: !!caps?.host_shell && can("shell.host") },
       { key: "postgres", label: "PostgreSQL", icon: <Database size={17} />, show: !!caps?.postgres && can("postgres.view") },
       { key: "mssql", label: "SQL Server", icon: <Database size={17} />, show: !!caps?.mssql && can("mssql.view") },
       { key: "iis", label: "IIS", icon: <Globe size={17} />, show: !!caps?.iis && can("iis.view") },
@@ -437,6 +439,9 @@ export function ServerPage() {
       {s.reasons.length > 0 && (
         <div className={`banner ${s.status === "critical" ? "crit" : "warn"}`} style={{ marginBottom: 16 }}>
           {s.reasons.join(" · ")}
+          {tabs.some((t) => t.key === "services") && s.reasons.some((r) => r.includes("service(s) failed")) && (
+            <> · <a href="#" onClick={(e) => { e.preventDefault(); setParams({ tab: "services", f: "failed" }, { replace: true }); }}>Review in Services</a></>
+          )}
         </div>
       )}
 
@@ -469,6 +474,7 @@ export function ServerPage() {
       )}
       {tab === "services" && <ServicesTab s={s} />}
       {tab === "schedule" && <ScheduleTab s={s} />}
+      {tab === "shell" && <HostTerminal serverId={s.id} windows={s?.hello?.os === "windows"} hostName={s.name} />}
       {tab === "syslogs" && <SystemLogsTab s={s} />}
     </div>
   );

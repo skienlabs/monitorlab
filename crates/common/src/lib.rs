@@ -100,6 +100,12 @@ pub struct Capabilities {
     /// Cron jobs, systemd timers or Windows scheduled tasks can be listed.
     #[serde(default)]
     pub schedule: bool,
+    /// An interactive shell on the server itself can be opened (opt-out in agent.toml: `[shell] enabled = false`).
+    #[serde(default)]
+    pub host_shell: bool,
+    /// The agent can be restarted from the hub.
+    #[serde(default)]
+    pub restart: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +326,8 @@ pub enum ServiceActionKind {
     Reload,
     Enable,
     Disable,
+    /// systemd `reset-failed`: forget a unit's failed state (it stays as it is otherwise).
+    ResetFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,7 +467,45 @@ pub enum Request {
     DockerStackAction { project: String, action: StackAction },
     /// Download the agent binary `file` from the hub, verify it and restart into it.
     SelfUpdate { file: String, sha256: String, version: String },
+    /// Restart the agent process (its service manager starts it again).
+    RestartAgent,
     DockerImages,
+    /// Download an image (uses the server's `docker login` credentials for private registries).
+    DockerImagePull { image: String },
+    /// Run a new container from an image (Portainer's "Add container").
+    DockerContainerCreate {
+        image: String,
+        #[serde(default)]
+        name: Option<String>,
+        /// `host:container[/proto]` or `ip:host:container`.
+        #[serde(default)]
+        ports: Vec<String>,
+        /// `KEY=value`.
+        #[serde(default)]
+        env: Vec<String>,
+        /// `volume-or-host-path:/path[:ro]`.
+        #[serde(default)]
+        volumes: Vec<String>,
+        /// no | always | unless-stopped | on-failure
+        #[serde(default)]
+        restart: Option<String>,
+        #[serde(default)]
+        network: Option<String>,
+        #[serde(default)]
+        cmd: Option<Vec<String>>,
+        #[serde(default)]
+        privileged: bool,
+        #[serde(default = "default_true")]
+        start: bool,
+        #[serde(default = "default_true")]
+        pull: bool,
+    },
+    DockerVolumeCreate { name: String },
+    DockerNetworkCreate {
+        name: String,
+        #[serde(default)]
+        subnet: Option<String>,
+    },
     DockerImageRemove {
         id: String,
         #[serde(default)]
@@ -531,8 +577,13 @@ impl Request {
             Request::DockerStackFile { .. } => "docker_stack_file",
             Request::DockerStackAction { .. } => "docker_stack_action",
             Request::SelfUpdate { .. } => "self_update",
+            Request::RestartAgent => "restart_agent",
             Request::DockerImages => "docker_images",
             Request::DockerImageRemove { .. } => "docker_image_remove",
+            Request::DockerImagePull { .. } => "docker_image_pull",
+            Request::DockerContainerCreate { .. } => "docker_container_create",
+            Request::DockerVolumeCreate { .. } => "docker_volume_create",
+            Request::DockerNetworkCreate { .. } => "docker_network_create",
             Request::DockerVolumes => "docker_volumes",
             Request::DockerVolumeRemove { .. } => "docker_volume_remove",
             Request::DockerNetworks => "docker_networks",
@@ -642,6 +693,16 @@ pub enum StreamRequest {
         #[serde(default)]
         grep: Option<String>,
     },
+    /// An interactive shell on the server itself: bash/sh on Linux and macOS, PowerShell/cmd on Windows.
+    HostShell {
+        /// "auto", "bash", "sh", "zsh", "powershell", "pwsh" or "cmd"; anything else is refused.
+        #[serde(default)]
+        shell: Option<String>,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+    },
     K8sPodExec {
         namespace: String,
         name: String,
@@ -680,6 +741,7 @@ impl StreamRequest {
             StreamRequest::ContainerStatsAll { .. } => "container_stats_all",
             StreamRequest::K8sPodLogs { .. } => "k8s_pod_logs",
             StreamRequest::K8sPodExec { .. } => "k8s_pod_exec",
+            StreamRequest::HostShell { .. } => "host_shell",
             StreamRequest::StackLogs { .. } => "stack_logs",
             StreamRequest::SystemLogs { .. } => "system_logs",
             StreamRequest::SystemLive { .. } => "system_live",

@@ -266,6 +266,44 @@ def v13_checks(hub, admin, sid, agent_bin=None):
     check("installer script supports --upgrade", r.status_code == 200 and "--upgrade" in r.text and "upgrade" in r.text, r.status_code)
     up = subprocess.run([agent_bin, "upgrade", "--config", "/tmp/e2e-no-such-config.toml"], capture_output=True, text=True) if agent_bin else None
     check("agent upgrade without an existing enrollment is refused", up is None or (up.returncode != 0 and ("no existing configuration" in up.stderr or "must be run as root" in up.stderr)), up and up.stderr[-200:])
+    # Shell on the server itself.
+    code, srv = admin.get(f"/servers/{sid}")
+    caps = (srv.get("hello") or {}).get("capabilities", {}) if code == 200 else {}
+    check("agent advertises the server shell", caps.get("host_shell") is True, caps)
+    def host_shell(cookie, req, sends=(), dur=3.5):
+        out = stream(hub, cookie, sid, req, sends=sends, dur=dur)
+        txt = b"".join(base64.b64decode(m["d"]["b64"]) for m in out if isinstance(out, list) and m.get("t") == "data" and "b64" in m.get("d", {})).decode(errors="replace") if isinstance(out, list) else ""
+        return out, txt
+    cmd = base64.b64encode(b"echo SHELL_$((40+2)); stty size; id -un; exit 3\n").decode()
+    out, txt = host_shell(admin.cookie(), {"kind": "host_shell", "cols": 80, "rows": 24},
+                          sends=[{"t": "resize", "cols": 97, "rows": 31}, {"t": "input", "b64": cmd}])
+    check("server shell runs commands", "SHELL_42" in txt, txt[-300:] or out)
+    check("server shell resize applied", "31 97" in txt, txt[-300:])
+    check("server shell reports the exit code", "exited with code 3" in txt, txt[-200:])
+    out, txt = host_shell(admin.cookie(), {"kind": "host_shell", "shell": "sh", "cols": 80, "rows": 24}, sends=[{"t": "input", "b64": base64.b64encode(b"echo VIA_SH\nexit\n").decode()}])
+    check("server shell can pick sh", "VIA_SH" in txt, txt[-200:])
+    out, txt = host_shell(admin.cookie(), {"kind": "host_shell", "shell": "rm -rf /", "cols": 80, "rows": 24}, dur=2)
+    check("server shell refuses shells outside the allow-list", isinstance(out, list) and any(m.get("t") == "end" and "unsupported shell" in str(m.get("error")) for m in out), out)
+    code, a = admin.get("/audit?limit=200")
+    entries = a.get("entries", a) if isinstance(a, dict) else a
+    check("server shell sessions are audited", code == 200 and any(e.get("action") == "host_shell" for e in entries), (code, str(a)[:200]))
+    code, roles = admin.get("/roles")
+    byname = {r["name"]: r for r in roles}
+    check("only Administrator has the server-shell permission by default", "shell.host" in byname["Administrator"]["permissions"] and not any("shell.host" in r["permissions"] for n, r in byname.items() if n != "Administrator"), {n: "shell.host" in r["permissions"] for n, r in byname.items()})
+    email = f"shell-op-{secrets.token_hex(3)}@x.test"
+    code, u = admin.post("/users", {"email": email, "name": "Shell Operator", "role_id": byname["Operator"]["id"], "password": "Operator-Pass-123", "must_change_password": False})
+    op = Client(hub)
+    op.login(email, "Operator-Pass-123")
+    out, txt = host_shell(op.cookie(), {"kind": "host_shell", "cols": 80, "rows": 24}, dur=1.5)
+    check("an Operator cannot open the server shell", isinstance(out, list) and any(m.get("t") == "end" and "shell.host" in str(m.get("error")) for m in out), out)
+    if code == 200:
+        admin.req("DELETE", f"/users/{u['id']}")
+
+    code, d = admin.post(f"/servers/{sid}/rpc", {"op": "service_action", "name": "e2e-none.service", "action": "reset_failed"})
+    check("service action reset_failed is understood (no systemd here, so the agent answers with an error)", code in (200, 502), (code, d))
+    code, d = admin.post(f"/servers/{sid}/rpc", {"op": "restart_agent"})
+    check("the hub's own agent refuses to restart itself", code == 502 and "own agent" in json.dumps(d), (code, d))
+    check("hub's own agent does not offer restart", caps.get("restart") in (False, None), caps)
     code, u = admin.get("/agent-updates")
     check("agent update settings readable", code == 200 and "auto_update" in u and u.get("hub_version"), (code, u))
     code, d = admin.req("PUT", "/agent-updates", {"auto_update": False})
@@ -565,6 +603,31 @@ def main():
         code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_remove", "id": cname, "force": True, "volumes": True})
         check("force remove", code == 200 and not sh("docker", "ps", "-aq", "--filter", f"name=^{cname}$"), (code, d))
         created_containers.remove(cname)
+        # Creating things (Portainer-style): volume, network, pull, run.
+        nv, nn, nc = f"{tag}-newvol", f"{tag}-newnet", f"{tag}-new"
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_volume_create", "name": nv})
+        check("create volume", code == 200 and nv in sh("docker", "volume", "ls", "-q"), (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_volume_create", "name": "bad name; rm"})
+        check("create volume rejects bad names", code == 502 and "may only contain" in json.dumps(d), (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_network_create", "name": nn, "subnet": "172.29.77.0/24"})
+        check("create network with subnet", code == 200 and "172.29.77.0/24" in sh("docker", "network", "inspect", nn), (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_image_pull", "image": img})
+        check("pull image (or clear error without registry access)", code == 200 or "ull" in json.dumps(d), (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_create", "image": img, "name": nc, "pull": False, "ports": ["127.0.0.1:18777:8080"], "env": ["E2E_VAR=hello"], "volumes": [f"{nv}:/data"], "restart": "unless-stopped", "network": nn, "cmd": ["sh", "-c", "echo $E2E_VAR > /data/f; sleep 300"]})
+        created_containers.append(nc)
+        check("run a new container", code == 200 and d.get("started") is True, (code, d))
+        ins = json.loads(sh("docker", "inspect", nc))[0]
+        check("new container has ports, env, volume, restart policy and network", ins["HostConfig"]["PortBindings"].get("8080/tcp", [{}])[0].get("HostPort") == "18777" and "E2E_VAR=hello" in ins["Config"]["Env"] and any(m["Name"] == nv for m in ins["Mounts"]) and ins["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped" and nn in ins["NetworkSettings"]["Networks"], ins["HostConfig"])
+        time.sleep(1.5)
+        check("new container ran its command", sh("docker", "exec", nc, "cat", "/data/f") == "hello", sh("docker", "logs", nc, check_rc=False))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_create", "image": img, "pull": False, "ports": ["abc:80"]})
+        check("run rejects a bad port", code == 502 and "ports must be numbers" in json.dumps(d), (code, d))
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_container_create", "image": img, "pull": False, "restart": "sometimes"})
+        check("run rejects an unknown restart policy", code == 502 and "restart policy" in json.dumps(d), (code, d))
+        sh("docker", "rm", "-f", nc)
+        created_containers.remove(nc)
+        sh("docker", "network", "rm", nn, check_rc=False)
+        sh("docker", "volume", "rm", nv, check_rc=False)
         vol = f"{tag}-vol"
         sh("docker", "volume", "create", vol)
         code, d = admin.post(f"/servers/{sid}/rpc", {"op": "docker_volume_remove", "name": vol})
@@ -597,6 +660,12 @@ def main():
         check("tester cannot prune", code == 403, (code, d))
         code, d = t.post(f"/servers/{sid}/rpc", {"op": "docker_container_remove", "id": "x"})
         check("tester cannot delete containers", code == 403, (code, d))
+        code, d = t.post(f"/servers/{sid}/rpc", {"op": "docker_container_create", "image": "x"})
+        check("tester cannot run new containers", code == 403, (code, d))
+        code, d = t.post(f"/servers/{sid}/rpc", {"op": "restart_agent"})
+        check("tester cannot restart agents", code == 403, (code, d))
+        code, d = t.post(f"/servers/{sid}/rpc", {"op": "service_action", "name": "x.service", "action": "reset_failed"})
+        check("tester cannot clear failed services", code == 403, (code, d))
         out = stream(hub, t.cookie(), sid, {"kind": "container_exec", "id": "x"}, dur=2)
         check("tester cannot open a terminal", isinstance(out, list) and out and "containers.exec" in str(out[0].get("error")), out)
         for p in ["/users", "/roles", "/audit", "/alert-channels"]:

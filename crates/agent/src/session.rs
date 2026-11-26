@@ -24,6 +24,7 @@ pub struct AgentOptions {
     pub docker_socket: Option<String>,
     pub mssql: MssqlConfig,
     pub postgres: crate::config::PostgresConfig,
+    pub shell: crate::config::ShellConfig,
     pub iis_enabled: Option<bool>,
     pub host_root: Option<String>,
     pub k8s: crate::config::K8sConfig,
@@ -41,6 +42,7 @@ impl AgentOptions {
             docker_socket: c.docker.socket.clone(),
             mssql: c.mssql.clone(),
             postgres: c.postgres.clone(),
+            shell: c.shell.clone(),
             iis_enabled: c.iis.enabled,
             host_root: c.host_root.clone(),
             k8s: c.kubernetes.clone(),
@@ -133,6 +135,7 @@ impl Agent {
         let can_update = self.opts.update.is_some();
         let pg_ok = self.postgres.configured();
         let schedule_ok = services_ok || cfg!(windows) || std::path::Path::new(&crate::util::host_path(self.opts.host_root.as_deref(), "/etc/crontab")).exists() || std::path::Path::new(&crate::util::host_path(self.opts.host_root.as_deref(), "/etc/cron.d")).is_dir();
+        let shell_ok = self.opts.shell.enabled;
         let mssql = self.mssql.clone();
         let iis = self.iis.clone();
         let col = self.collector.clone();
@@ -150,6 +153,8 @@ impl Agent {
                 self_update: can_update,
                 postgres: pg_ok,
                 schedule: schedule_ok,
+                host_shell: shell_ok,
+                restart: can_update,
             };
             let c = col.lock().unwrap_or_else(|e| e.into_inner());
             c.hello(caps, interval)
@@ -350,9 +355,30 @@ impl Agent {
                 Some(src) => crate::update::self_update(src, &file, &sha256, &version).await,
                 None => Err(anyhow!("the hub's built-in agent is updated with the hub image")),
             },
+            Request::RestartAgent => {
+                if self.opts.update.is_none() {
+                    bail!("this is the hub's own agent: restart the MonitorLab container instead (docker compose restart)");
+                }
+                tracing::info!("restart requested from the hub");
+                tokio::spawn(async {
+                    // Let the reply reach the hub first; the service manager starts the agent again.
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    std::process::exit(if cfg!(windows) { 1 } else { 0 });
+                });
+                Ok(serde_json::json!({ "ok": true }))
+            }
             Request::DockerContainerRename { id, name } => self.docker()?.rename(&id, &name).await,
             Request::DockerContainerRecreate { id, pull } => self.docker()?.recreate(&id, pull, self.opts.host_root.as_deref()).await,
             Request::DockerImages => self.docker()?.images().await,
+            Request::DockerImagePull { image } => {
+                self.docker()?.pull(image.trim(), self.opts.host_root.as_deref()).await?;
+                Ok(serde_json::json!({ "ok": true }))
+            }
+            Request::DockerContainerCreate { image, name, ports, env, volumes, restart, network, cmd, privileged, start, pull } => {
+                self.docker()?.create(crate::docker::NewContainer { image, name, ports, env, volumes, restart, network, cmd, privileged, start, pull }, self.opts.host_root.as_deref()).await
+            }
+            Request::DockerVolumeCreate { name } => self.docker()?.create_volume(&name).await,
+            Request::DockerNetworkCreate { name, subnet } => self.docker()?.create_network(&name, subnet).await,
             Request::DockerImageRemove { id, force } => self.docker()?.remove_image(&id, force).await,
             Request::DockerVolumes => self.docker()?.volumes().await,
             Request::DockerVolumeRemove { name } => self.docker()?.remove_volume(&name).await,
@@ -427,6 +453,13 @@ impl Agent {
             StreamRequest::SystemLogs { unit, log, priority, tail, since, follow, grep } => self.services.stream_logs(log, unit, priority, tail, since, follow, grep, sid, out).await,
             #[cfg(not(any(target_os = "linux", windows)))]
             StreamRequest::SystemLogs { .. } => Err(anyhow!("system logs are not supported on this platform")),
+            StreamRequest::HostShell { shell, cols, rows } => {
+                if !self.opts.shell.enabled {
+                    bail!("the server shell is disabled on this agent ([shell] enabled = false)");
+                }
+                let host = sysinfo::System::host_name().unwrap_or_else(|| "server".into());
+                crate::hostshell::run(shell, cols, rows, host, sid, out, ctl).await
+            }
             StreamRequest::K8sPodExec { namespace, name, container, cmd, cols, rows } => {
                 self.kube()?.exec(&namespace, &name, container, cmd, cols, rows, sid, out, ctl).await
             }

@@ -321,6 +321,7 @@ async fn browser_stream(state: S, user: AuthUser, row: AgentRow, conn: Arc<Agent
     // Interactive sessions: keystrokes are forwarded, and every session is audited.
     let exec_audit = match &req {
         StreamRequest::ContainerExec { id, cmd, .. } => Some(("container_exec", format!("{id} {}", cmd.as_ref().map(|c| c.join(" ")).unwrap_or_default()))),
+        StreamRequest::HostShell { shell, .. } => Some(("host_shell", shell.clone().unwrap_or_else(|| "auto".into()))),
         StreamRequest::K8sPodExec { namespace, name, container, cmd, .. } => Some((
             "pod_exec",
             format!("{namespace}/{name}{} {}", container.as_ref().map(|c| format!(" [{c}]")).unwrap_or_default(), cmd.as_ref().map(|c| c.join(" ")).unwrap_or_default()),
