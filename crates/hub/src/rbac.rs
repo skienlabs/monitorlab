@@ -23,6 +23,8 @@ pub const K8S_CONTROL: &str = "k8s.control";
 pub const K8S_EXEC: &str = "k8s.exec";
 pub const SERVICES_VIEW: &str = "services.view";
 pub const SERVICES_CONTROL: &str = "services.control";
+pub const POSTGRES_VIEW: &str = "postgres.view";
+pub const POSTGRES_CONTROL: &str = "postgres.control";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PermInfo {
@@ -39,11 +41,13 @@ pub const CATALOG: &[PermInfo] = &[
     PermInfo { key: MSSQL_VIEW, group: "Monitoring", label: "View SQL Server", description: "Instance status, databases and counters", dangerous: false },
     PermInfo { key: IIS_VIEW, group: "Monitoring", label: "View IIS", description: "Sites, bindings and application pools", dangerous: false },
     PermInfo { key: K8S_VIEW, group: "Monitoring", label: "View Kubernetes", description: "Nodes, workloads, pods, services and events", dangerous: false },
+    PermInfo { key: POSTGRES_VIEW, group: "Monitoring", label: "View PostgreSQL", description: "Databases, connections, replication and running queries (query text can contain data)", dangerous: false },
     PermInfo { key: SERVICES_VIEW, group: "Monitoring", label: "View services", description: "systemd units / Windows services and their state", dangerous: false },
     PermInfo { key: LOGS_VIEW, group: "Monitoring", label: "View logs", description: "Container, pod, IIS and SQL Server logs", dangerous: false },
     PermInfo { key: CONTAINERS_CONTROL, group: "Operations", label: "Control containers", description: "Start, stop, restart, pause and kill containers", dangerous: false },
     PermInfo { key: IIS_CONTROL, group: "Operations", label: "Control IIS", description: "Start/stop sites, recycle application pools", dangerous: false },
     PermInfo { key: K8S_CONTROL, group: "Operations", label: "Control Kubernetes", description: "Restart rollouts, scale workloads, delete pods, cordon nodes", dangerous: false },
+    PermInfo { key: POSTGRES_CONTROL, group: "Operations", label: "Control PostgreSQL sessions", description: "Cancel queries and terminate connections", dangerous: true },
     PermInfo { key: SERVICES_CONTROL, group: "Operations", label: "Control services", description: "Start, stop, restart, enable and disable system services", dangerous: true },
     PermInfo { key: CONTAINERS_EXEC, group: "Operations", label: "Container terminal", description: "Open an interactive shell inside containers", dangerous: true },
     PermInfo { key: K8S_EXEC, group: "Operations", label: "Pod terminal", description: "Open an interactive shell inside Kubernetes pods", dangerous: true },
@@ -73,6 +77,9 @@ pub fn role_upgrades() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         ("rbac_v1_3_services", "Operator", vec![SERVICES_VIEW, SERVICES_CONTROL]),
         ("rbac_v1_3_services", "Tester", vec![SERVICES_VIEW]),
         ("rbac_v1_3_services", "Viewer", vec![SERVICES_VIEW]),
+        ("rbac_v1_3_postgres", "Operator", vec![POSTGRES_VIEW, POSTGRES_CONTROL]),
+        ("rbac_v1_3_postgres", "Tester", vec![POSTGRES_VIEW]),
+        ("rbac_v1_3_postgres", "Viewer", vec![POSTGRES_VIEW]),
     ]
 }
 
@@ -83,14 +90,14 @@ pub fn builtin_roles() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
         (
             "Operator",
             "View everything, read logs, control containers and IIS, open terminals. Cannot delete.",
-            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, K8S_CONTROL, SERVICES_CONTROL, CONTAINERS_EXEC, K8S_EXEC, ALERTS_MANAGE],
+            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, POSTGRES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL, IIS_CONTROL, K8S_CONTROL, SERVICES_CONTROL, POSTGRES_CONTROL, CONTAINERS_EXEC, K8S_EXEC, ALERTS_MANAGE],
         ),
         (
             "Tester",
             "View servers and logs, restart containers. No terminal, no deletes.",
-            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL],
+            vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, POSTGRES_VIEW, LOGS_VIEW, CONTAINERS_CONTROL],
         ),
-        ("Viewer", "Read-only dashboards and logs", vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, LOGS_VIEW]),
+        ("Viewer", "Read-only dashboards and logs", vec![SERVERS_VIEW, DOCKER_VIEW, MSSQL_VIEW, IIS_VIEW, K8S_VIEW, SERVICES_VIEW, POSTGRES_VIEW, LOGS_VIEW]),
     ]
 }
 
@@ -125,6 +132,8 @@ pub fn for_request(r: &Request) -> &'static str {
         Request::K8sPodDelete { .. } | Request::K8sRolloutRestart { .. } | Request::K8sScale { .. } | Request::K8sNodeCordon { .. } | Request::K8sCronJobTrigger { .. } => K8S_CONTROL,
         Request::K8sResources { .. } | Request::K8sNodeDetail { .. } | Request::K8sNamespaceUsage => K8S_VIEW,
         Request::ServicesList => SERVICES_VIEW,
+        Request::PgOverview | Request::PgActivity => POSTGRES_VIEW,
+        Request::PgBackend { .. } => POSTGRES_CONTROL,
         Request::ServiceAction { .. } => SERVICES_CONTROL,
         Request::DockerStacks | Request::DockerStackFile { .. } => DOCKER_VIEW,
         // Redeploying replaces containers (like recreate); start / stop / restart are routine.
@@ -156,6 +165,7 @@ pub fn is_mutating(r: &Request) -> bool {
             | Request::K8sNodeCordon { .. }
             | Request::K8sCronJobTrigger { .. }
             | Request::ServiceAction { .. }
+            | Request::PgBackend { .. }
             | Request::DockerStackAction { .. }
             | Request::SelfUpdate { .. }
     )

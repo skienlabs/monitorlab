@@ -94,6 +94,9 @@ pub struct Capabilities {
     /// The agent can replace its own binary when the hub asks.
     #[serde(default)]
     pub self_update: bool,
+    /// A PostgreSQL connection is configured in agent.toml.
+    #[serde(default)]
+    pub postgres: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +167,41 @@ pub struct MetricsSample {
     /// `None` = not checked in this sample.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_services: Option<Vec<String>>,
+    /// PostgreSQL health (only when a connection is configured; refreshed about every 30 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postgres: Option<PgSummary>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PgSummary {
+    pub up: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub connections: i64,
+    #[serde(default)]
+    pub max_connections: i64,
+    /// Sessions waiting on a lock held by another session.
+    #[serde(default)]
+    pub blocked: i64,
+    #[serde(default)]
+    pub db_bytes: i64,
+    #[serde(default)]
+    pub replica: bool,
+    /// Seconds a replica is behind (0 on a primary).
+    #[serde(default)]
+    pub replay_lag_s: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PgBackendKind {
+    /// Cancel the running query, keep the connection.
+    Cancel,
+    /// Close the connection.
+    Terminate,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -407,6 +445,9 @@ pub enum Request {
     /// Services: systemd units (Linux) or Windows services.
     ServicesList,
     ServiceAction { name: String, action: ServiceActionKind },
+    PgOverview,
+    PgActivity,
+    PgBackend { pid: i32, kind: PgBackendKind },
     /// Docker compose stacks (from container labels).
     DockerStacks,
     DockerStackFile { project: String },
@@ -476,6 +517,9 @@ impl Request {
             Request::K8sCronJobTrigger { .. } => "k8s_cronjob_trigger",
             Request::ServicesList => "services_list",
             Request::ServiceAction { .. } => "service_action",
+            Request::PgOverview => "pg_overview",
+            Request::PgActivity => "pg_activity",
+            Request::PgBackend { .. } => "pg_backend",
             Request::DockerStacks => "docker_stacks",
             Request::DockerStackFile { .. } => "docker_stack_file",
             Request::DockerStackAction { .. } => "docker_stack_action",

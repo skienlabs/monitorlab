@@ -242,7 +242,23 @@ CPU and memory figures come from metrics-server, which k3s installs by default. 
 - **Alerts**: per-server thresholds, maintenance windows that mute alerts, repeat reminders, failed-service alerts.
 - **Uptime**: HTTP and TCP monitors with keyword checks, response time, uptime percentages and SSL certificate expiry warnings.
 - **Agent self-update**: the hub can update agents (button, or automatically). Agents older than 1.3 need the installer run once. Linux installs keep the binary in `/opt/monitorlab/bin`.
-- **macOS agent**: `curl ... install.sh | sudo sh` works on a Mac (launchd service, Docker Desktop / OrbStack / Colima sockets). The macOS binaries are built on a GitHub macOS runner; a failure there does not block a deploy.
+- **macOS agent**: `curl ... install.sh | sudo sh` works on a Mac (launchd service, Docker Desktop / OrbStack / Colima sockets). GitHub's hosted macOS runners are not available to this account, so build the agent on the Mac and upload it to the hub: `HUB=https://your-hub EMAIL=you@example.com ./deploy/build-macos-agent.sh`. Uploaded binaries live in the hub's data volume and survive redeploys; agents on Macs then update themselves like any other. (Alternatively register the Mac as a self-hosted runner and set the repository variable `MAC_RUNNER=true`.)
+- **PostgreSQL**: connections, databases (size, commits, rollbacks, cache hit, deadlocks), replication, longest transaction and a live Sessions view with cancel / terminate. Add a read-only role and the connection to `agent.toml`:
+
+  ```toml
+  [postgres.connection]
+  host = "127.0.0.1"
+  port = 5432
+  user = "monitorlab"
+  password = "…"
+  database = "postgres"
+  sslmode = "disable"   # or "require"
+  ```
+  ```sql
+  CREATE ROLE monitorlab LOGIN PASSWORD '…';
+  GRANT pg_monitor TO monitorlab;
+  ```
+  For the hub's own host set `MONITORLAB_PG_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_DATABASE` on the hub container. Alerts: unreachable (critical), connections above 90% of the limit, replica more than 5 minutes behind (warning). Permissions: `postgres.view`, `postgres.control`.
 - **Install as an app**: the console is a progressive web app. Use the install button in the header (Chrome/Edge) or Add to Home Screen / Add to Dock (Safari).
 - **Sorting**: click any column header on list screens to sort ascending, descending, or back to the default.
 
@@ -265,7 +281,7 @@ pip install playwright && python -m playwright install chromium
 python3 tests/ui_walk.py --hub https://127.0.0.1:8443 --email admin@… --password '…' --out shots/
 ```
 
-The e2e suite has 144 checks (170 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
+The e2e suite has 162 checks (188 with `--k8s-mock-dir`). It covers authentication hardening (CSRF, origin checks, throttling, cookie flags), every Docker operation including terminal and log streams, rename and recreate (settings, networks and volumes kept), profiles, photos and sessions, the RBAC matrix, server scoping, last-admin protection, enrollment with pinning and token reuse, server revocation, alert channels with real webhook delivery, and audit coverage. It cleans up everything it creates.
 
 ## Development
 

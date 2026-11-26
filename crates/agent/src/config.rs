@@ -28,6 +28,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub mssql: MssqlConfig,
     #[serde(default)]
+    pub postgres: PostgresConfig,
+    #[serde(default)]
     pub iis: IisConfig,
     #[serde(default)]
     pub kubernetes: K8sConfig,
@@ -51,6 +53,54 @@ pub struct DockerConfig {
 impl Default for DockerConfig {
     fn default() -> Self {
         Self { enabled: true, socket: None, history: true }
+    }
+}
+
+/// Optional PostgreSQL monitoring. Add a read-only role (for example a member of `pg_monitor`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    #[serde(default)]
+    pub connection: Option<PostgresConnection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConnection {
+    #[serde(default = "pg_host")]
+    pub host: String,
+    #[serde(default = "pg_port")]
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default = "pg_db")]
+    pub database: String,
+    /// `disable` (default) or `require` (TLS, certificate not verified, like libpq's `require`).
+    #[serde(default = "pg_ssl")]
+    pub sslmode: String,
+}
+
+fn pg_host() -> String { "127.0.0.1".into() }
+fn pg_port() -> u16 { 5432 }
+fn pg_db() -> String { "postgres".into() }
+fn pg_ssl() -> String { "disable".into() }
+
+impl PostgresConfig {
+    /// Settings for the hub's built-in agent: `MONITORLAB_PG_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_DATABASE`, `_SSLMODE`.
+    pub fn from_env() -> Self {
+        let e = |k: &str| std::env::var(format!("MONITORLAB_PG_{k}")).ok().filter(|v| !v.is_empty());
+        match e("USER") {
+            Some(user) => Self {
+                connection: Some(PostgresConnection {
+                    host: e("HOST").unwrap_or_else(pg_host),
+                    port: e("PORT").and_then(|p| p.parse().ok()).unwrap_or(5432),
+                    user,
+                    password: e("PASSWORD").unwrap_or_default(),
+                    database: e("DATABASE").unwrap_or_else(pg_db),
+                    sslmode: e("SSLMODE").unwrap_or_else(pg_ssl),
+                }),
+            },
+            None => Self::default(),
+        }
     }
 }
 

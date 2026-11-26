@@ -211,10 +211,89 @@ def v13_checks(hub, admin, sid):
     # History and update settings.
     code, h = admin.get(f"/servers/{sid}/usage-history?kind=container&name=x&range=6h")
     check("container usage history endpoint answers", code == 200, (code, str(h)[:200]))
+    code, d = admin.req("PUT", "/agent-binaries/not-an-agent", None)
+    check("agent upload rejects unknown file names", code in (400, 404), (code, d))
+    r = admin.s.put(hub + "/api/agent-binaries/monitorlab-agent-macos-arm64", data=b"not a binary", headers={"x-monitorlab-csrf": "1", "content-type": "application/octet-stream"})
+    check("agent upload rejects files that are not binaries", r.status_code == 400, r.status_code)
+    r = admin.s.put(hub + "/api/agent-binaries/monitorlab-agent-macos-arm64", data=b"x" * 2_000_000, headers={"content-type": "application/octet-stream"})
+    check("agent upload needs the CSRF header", r.status_code == 403, r.status_code)
     code, u = admin.get("/agent-updates")
     check("agent update settings readable", code == 200 and "auto_update" in u and u.get("hub_version"), (code, u))
     code, d = admin.req("PUT", "/agent-updates", {"auto_update": False})
     check("agent auto-update can be switched off and on", code == 200 and admin.get("/agent-updates")[1]["auto_update"] is False and admin.req("PUT", "/agent-updates", {"auto_update": True})[0] == 200, (code, d))
+
+
+def pg_checks(hub, admin, a, created_servers, created_containers, agent_procs, tag):
+    """PostgreSQL monitoring against a real server in a container, through an enrolled agent."""
+    import requests as rq
+    pgname = f"{tag}-pg"
+    r = subprocess.run(["docker", "run", "-d", "--name", pgname, "-p", "127.0.0.1:55432:5432", "-e", "POSTGRES_USER=monitorlab", "-e", "POSTGRES_PASSWORD=pg-test-pass", "mirror.gcr.io/library/postgres:16-alpine"], capture_output=True, text=True)
+    if r.returncode != 0:
+        r = subprocess.run(["docker", "run", "-d", "--name", pgname, "-p", "127.0.0.1:55432:5432", "-e", "POSTGRES_USER=monitorlab", "-e", "POSTGRES_PASSWORD=pg-test-pass", "postgres:16-alpine"], capture_output=True, text=True)
+    if not check("start a PostgreSQL container", r.returncode == 0, r.stderr):
+        return
+    created_containers.append(pgname)
+    def pg_ready():
+        o = subprocess.run(["docker", "exec", pgname, "pg_isready", "-U", "monitorlab"], capture_output=True, text=True)
+        if o.returncode != 0:
+            return False
+        o = subprocess.run(["docker", "exec", pgname, "psql", "-U", "monitorlab", "-tAc", "select 1"], capture_output=True, text=True)
+        return o.returncode == 0
+    check("PostgreSQL accepts connections", wait_for(pg_ready, 60, 1.5))
+    code, info = admin.get("/hub/info")
+    fp = info.get("fingerprint")
+    code, srvd = admin.post("/servers", {"name": f"{tag}-pgagent"})
+    created_servers.append(srvd["id"])
+    cfg = f"/tmp/{tag}-pg.toml"
+    subprocess.run([a.agent_bin, "enroll", "--hub", hub, f"--token={srvd['token']}", "--config", cfg] + (["--fingerprint", fp] if fp else []), capture_output=True, text=True)
+    with open(cfg, "a") as f:
+        f.write('\n[postgres.connection]\nhost = "127.0.0.1"\nport = 55432\nuser = "monitorlab"\npassword = "pg-test-pass"\ndatabase = "postgres"\n')
+    p = subprocess.Popen([a.agent_bin, "run", "--config", cfg], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    agent_procs.append(p)
+    sid = srvd["id"]
+    check("agent with PostgreSQL comes online", wait_for(lambda: admin.get(f"/servers/{sid}")[1].get("online"), 30))
+    code, d = admin.get(f"/servers/{sid}")
+    check("PostgreSQL capability reported", d.get("hello", {}).get("capabilities", {}).get("postgres") is True, d.get("hello"))
+    code, ov = admin.post(f"/servers/{sid}/rpc", {"op": "pg_overview"})
+    check("overview: version, uptime, connections", code == 200 and "PostgreSQL 16" in ov.get("short_version", "") and ov["max_connections"] > 0 and ov["connections"]["total"] >= 0, (code, str(ov)[:300]))
+    check("overview lists databases with sizes", code == 200 and any(x["name"] == "postgres" and x["size"] > 0 for x in ov.get("databases", [])), str(ov)[:300])
+    check("primary reports no replica", ov.get("replica") is False)
+    # a slow query shows up in sessions and can be cancelled
+    slow = subprocess.Popen(["docker", "exec", pgname, "psql", "-U", "monitorlab", "-c", "select pg_sleep(60)"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    def find_slow():
+        c, act = admin.post(f"/servers/{sid}/rpc", {"op": "pg_activity"})
+        return next((x for x in act.get("sessions", []) if "pg_sleep" in x["query"] and x["state"] == "active"), None) if c == 200 else None
+    row = None
+    for _ in range(15):
+        row = find_slow()
+        if row:
+            break
+        time.sleep(1)
+    check("running query visible in sessions", row is not None)
+    if row:
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "pg_backend", "pid": row["pid"], "kind": "cancel"})
+        check("cancel a running query", code == 200 and d.get("ok") is True, (code, d))
+        gone = wait_for(lambda: find_slow() is None, 15)
+        check("cancelled query is no longer running", gone)
+        code, d = admin.post(f"/servers/{sid}/rpc", {"op": "pg_backend", "pid": 1, "kind": "terminate"})
+        check("terminating a non-session pid is refused", code != 200, (code, d))
+    slow.kill()
+    # the tab data also flows through the periodic metrics (alerts use it)
+    ok = wait_for(lambda: (admin.get(f"/servers/{sid}")[1].get("latest") or {}).get("postgres", {}) and admin.get(f"/servers/{sid}")[1]["latest"]["postgres"].get("up"), 45)
+    check("health sample reaches the hub", ok, admin.get(f"/servers/{sid}")[1].get("latest", {}).get("postgres"))
+    # stop the database: critical alert
+    subprocess.run(["docker", "stop", pgname], capture_output=True)
+    def pg_alert():
+        c, al = admin.get("/alerts")
+        items = al if isinstance(al, list) else al.get("alerts", [])
+        return any(x.get("rule") == "postgres:down" and x.get("server_id") == sid for x in items)
+    check("PostgreSQL down raises a critical alert", wait_for(pg_alert, 90, 3))
+    code, d = admin.post(f"/servers/{sid}/rpc", {"op": "pg_overview"})
+    check("overview explains an unreachable server", code != 200 and "unreachable" in json.dumps(d), (code, d))
+    # a viewer cannot cancel sessions
+    code, roles = admin.get("/roles")
+    viewer = next(r for r in roles if r["name"] == "Viewer")
+    check("Viewer role can view but not control PostgreSQL", "postgres.view" in viewer["permissions"] and "postgres.control" not in viewer["permissions"], viewer)
 
 
 def k8s_checks(hub, admin, sid, mock_dir):
@@ -524,6 +603,10 @@ def main():
             check("removed agent cannot reconnect", srvd["id"] not in [s["id"] for s in lst], lst)
         else:
             print("  SKIP  enrollment tests (no --agent-bin)")
+
+        if a.agent_bin and os.path.exists(a.agent_bin):
+            section("PostgreSQL")
+            pg_checks(hub, admin, a, created_servers, created_containers, agent_procs, tag)
 
         # ------------------------------------------------------------ alerting
         section("Alerting")

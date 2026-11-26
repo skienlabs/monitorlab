@@ -45,6 +45,9 @@ pub struct AlertRules {
     /// systemd units failed / automatic Windows services stopped with an error (warning).
     #[serde(default = "yes")]
     pub failed_services: bool,
+    /// PostgreSQL unreachable (critical), connection slots nearly used up or a replica far behind (warning).
+    #[serde(default = "yes")]
+    pub postgres_problems: bool,
     /// Re-send notifications for alerts still firing and not acknowledged every N minutes (0 = off).
     #[serde(default)]
     pub repeat_minutes: u32,
@@ -67,6 +70,7 @@ impl Default for AlertRules {
             iis_stopped: true,
             k8s_problems: true,
             failed_services: true,
+            postgres_problems: true,
             repeat_minutes: 0,
         }
     }
@@ -193,6 +197,20 @@ pub fn evaluate(m: &MetricsSample, r: &AlertRules, sustained_cpu: Option<f64>, s
             let shown: Vec<&str> = f.iter().take(8).map(String::as_str).collect();
             let more = if f.len() > 8 { format!(" and {} more", f.len() - 8) } else { String::new() };
             out.push(("services".into(), Severity::Warning, format!("{} service(s) failed: {}{more}", f.len(), shown.join(", "))));
+        }
+    }
+    if r.postgres_problems {
+        if let Some(p) = &m.postgres {
+            if !p.up {
+                out.push(("postgres:down".into(), Severity::Critical, format!("PostgreSQL is unreachable: {}", p.error.as_deref().unwrap_or("no answer"))));
+            } else {
+                if p.max_connections > 0 && p.connections * 100 >= p.max_connections * 90 {
+                    out.push(("postgres:connections".into(), Severity::Warning, format!("PostgreSQL connections at {} of {} allowed", p.connections, p.max_connections)));
+                }
+                if p.replica && p.replay_lag_s > 300.0 {
+                    out.push(("postgres:lag".into(), Severity::Warning, format!("PostgreSQL replica is {:.0} s behind the primary", p.replay_lag_s)));
+                }
+            }
         }
     }
     if r.k8s_problems {

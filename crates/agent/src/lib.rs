@@ -17,6 +17,7 @@ pub mod diskstats;
 pub mod iis;
 pub mod install;
 pub mod mssql;
+pub mod postgres;
 pub mod session;
 pub mod system;
 pub mod textlog;

@@ -49,25 +49,20 @@ jobs:
       - name: Rust unit tests
         run: cargo test --workspace --locked
 
-  # macOS agents are built on a Mac runner (Apple's linker and SDK are not available in the Linux image).
-  # A failure here never blocks a deploy; the hub just ships without the macOS agent until it is fixed.
+  # Optional: macOS agents built on your own Mac (GitHub's hosted macOS runners are not available to this
+  # account). Register the Mac as a self-hosted runner, then set the repository variable MAC_RUNNER=true.
+  # Without it, build the agent on the Mac with deploy/build-macos-agent.sh, which uploads it to the hub.
   agent-macos:
-    runs-on: macos-14
+    if: ${{ vars.MAC_RUNNER == 'true' }}
+    runs-on: [self-hosted, macOS, ARM64]
     continue-on-error: true
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-
       - name: Build macOS agents
         run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           cargo build --release --locked -p monitorlab-agent --target aarch64-apple-darwin
           cargo build --release --locked -p monitorlab-agent --target x86_64-apple-darwin
           mkdir -p out
@@ -85,6 +80,8 @@ jobs:
 
   build-deploy:
     needs: [test, agent-macos]
+    # agent-macos is skipped unless a Mac runner is configured; that must not block the deploy.
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:

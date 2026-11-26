@@ -23,6 +23,7 @@ pub struct AgentOptions {
     pub docker_enabled: bool,
     pub docker_socket: Option<String>,
     pub mssql: MssqlConfig,
+    pub postgres: crate::config::PostgresConfig,
     pub iis_enabled: Option<bool>,
     pub host_root: Option<String>,
     pub k8s: crate::config::K8sConfig,
@@ -39,6 +40,7 @@ impl AgentOptions {
             docker_enabled: c.docker.enabled,
             docker_socket: c.docker.socket.clone(),
             mssql: c.mssql.clone(),
+            postgres: c.postgres.clone(),
             iis_enabled: c.iis.enabled,
             host_root: c.host_root.clone(),
             k8s: c.kubernetes.clone(),
@@ -59,6 +61,7 @@ pub struct Agent {
     docker: Option<DockerCtl>,
     collector: Arc<Mutex<Collector>>,
     mssql: Arc<Mssql>,
+    postgres: Arc<crate::postgres::Postgres>,
     iis: Arc<Iis>,
     kube: Option<Arc<crate::k8s::Kube>>,
     /// Set by `hello` when the Kubernetes API answered.
@@ -97,6 +100,7 @@ impl Agent {
             kube,
             kube_ok: Default::default(),
             mssql: Arc::new(Mssql::new(opts.mssql.clone(), opts.host_root.clone())),
+            postgres: Arc::new(crate::postgres::Postgres::new(opts.postgres.clone())),
             iis: Arc::new(Iis::new(opts.iis_enabled)),
             collector: Arc::new(Mutex::new(collector)),
             docker,
@@ -127,6 +131,7 @@ impl Agent {
         let services_ok = self.services.available().await;
         let logs_ok = self.services.logs_available().await;
         let can_update = self.opts.update.is_some();
+        let pg_ok = self.postgres.configured();
         let mssql = self.mssql.clone();
         let iis = self.iis.clone();
         let col = self.collector.clone();
@@ -142,6 +147,7 @@ impl Agent {
                 services: services_ok,
                 system_logs: logs_ok,
                 self_update: can_update,
+                postgres: pg_ok,
             };
             let c = col.lock().unwrap_or_else(|e| e.into_inner());
             c.hello(caps, interval)
@@ -264,6 +270,9 @@ impl Agent {
             if every(30) {
                 sample.failed_services = tokio::time::timeout(Duration::from_secs(10), self.services.failed()).await.ok().flatten();
             }
+            if every(30) {
+                sample.postgres = self.postgres.summary().await;
+            }
             if out.send(AgentMsg::Metrics(sample)).await.is_err() {
                 return;
             }
@@ -326,6 +335,9 @@ impl Agent {
             Request::K8sNamespaceUsage => self.kube()?.namespace_usage().await,
             Request::K8sCronJobTrigger { namespace, name } => self.kube()?.trigger_cronjob(&namespace, &name).await,
             Request::ServicesList => self.services.list().await,
+            Request::PgOverview => self.postgres.overview().await,
+            Request::PgActivity => self.postgres.activity().await,
+            Request::PgBackend { pid, kind } => self.postgres.backend(pid, kind).await,
             Request::ServiceAction { name, action } => self.services.action(&name, action).await,
             Request::DockerStacks => self.docker()?.stacks().await,
             Request::DockerStackFile { project } => self.docker()?.stack_file(&project, self.opts.host_root.as_deref()).await,

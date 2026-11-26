@@ -44,7 +44,7 @@ function InstallSteps({ t, info }: { t: Token; info: HubInfo }) {
             Run in Terminal on the Mac (Apple Silicon or Intel). It downloads the right agent from this hub, enrolls it and installs a <span className="mono">launchd</span> service that starts at boot and restarts itself.
           </div>
           <CodeBlock>{linux}</CodeBlock>
-          {!info.downloads.macos_arm64 && !info.downloads.macos_amd64 && <div className="banner warn small">This hub does not bundle the macOS agent yet. It is added by the release build.</div>}
+          {!info.downloads.macos_arm64 && !info.downloads.macos_amd64 && <div className="banner warn small">This hub does not have the macOS agent yet. On the Mac, run deploy/build-macos-agent.sh from the repository; it builds the agent and uploads it here.</div>}
           <div className="small muted">Shows CPU, memory, disks, processes and Docker containers (Docker Desktop, OrbStack or Colima). Services and system logs are not available on macOS yet.</div>
         </>
       ) : os === "linux" ? (

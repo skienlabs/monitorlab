@@ -10,6 +10,7 @@ import { OsIcon } from "../components/OsIcon";
 import { bytes, dateTime, duration, pct, rate, ratio } from "../format";
 import { ContainersTab, ImagesTab, NetworksTab, CleanupTab, VolumesTab } from "./DockerTabs";
 import { MssqlTab } from "./MssqlTab";
+import { PostgresTab } from "./PostgresTab";
 import { IisTab } from "./IisTab";
 import { KubernetesTab } from "./K8sTab";
 import { StacksTab } from "./Stacks";
@@ -379,6 +380,7 @@ export function ServerPage() {
       { key: "services", label: "Services", icon: <Cog size={17} />, show: !!caps?.services && can("services.view") },
       { key: "syslogs", label: s?.hello?.os === "windows" ? "Event Log" : "System logs", icon: <ScrollText size={17} />, show: !!caps?.system_logs && can("logs.view") },
       { key: "alerts", label: "Alerts", icon: <BellRing size={17} />, show: true },
+      { key: "postgres", label: "PostgreSQL", icon: <Database size={17} />, show: !!caps?.postgres && can("postgres.view") },
       { key: "mssql", label: "SQL Server", icon: <Database size={17} />, show: !!caps?.mssql && can("mssql.view") },
       { key: "iis", label: "IIS", icon: <Globe size={17} />, show: !!caps?.iis && can("iis.view") },
     ];
@@ -453,6 +455,7 @@ export function ServerPage() {
       {tab === "networks" && <NetworksTab s={s} />}
       {tab === "cleanup" && <CleanupTab s={s} />}
       {tab === "mssql" && <MssqlTab s={s} />}
+      {tab === "postgres" && <PostgresTab s={s} />}
       {tab === "iis" && <IisTab s={s} />}
       {tab === "k8s" && <KubernetesTab s={s} />}
       {tab === "stacks" && <StacksTab s={s} />}

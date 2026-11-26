@@ -29,6 +29,7 @@ pub async fn enroll_and_save(args: &InstallArgs) -> Result<PathBuf> {
         interval_secs: 5,
         docker: DockerConfig::default(),
         mssql: MssqlConfig::default(),
+        postgres: Default::default(),
         iis: IisConfig::default(),
         kubernetes: K8sConfig::default(),
         host_root: None,

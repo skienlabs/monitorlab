@@ -32,6 +32,7 @@ pub struct AgentConn {
     pub latest: RwLock<Option<MetricsSample>>,
     /// Last reported failed services (the agent checks them every ~30 s, not in every sample).
     pub failed_services: RwLock<Option<Vec<String>>>,
+    pub postgres: RwLock<Option<monitorlab_common::PgSummary>>,
     pub last_msg_at: AtomicU64,
     pub shutdown: Notify,
     next_id: AtomicU64,
@@ -116,11 +117,15 @@ impl AgentConn {
                 if let Some(f) = &m.failed_services {
                     *self.failed_services.write().unwrap() = Some(f.clone());
                 }
+                if let Some(p) = &m.postgres {
+                    *self.postgres.write().unwrap() = Some(p.clone());
+                }
                 // Keep the summary lean: per-container / per-pod rows go to history only.
                 let mut lean = m.clone();
                 lean.containers.clear();
                 lean.pods.clear();
                 lean.failed_services = self.failed_services.read().unwrap().clone();
+                lean.postgres = self.postgres.read().unwrap().clone();
                 *self.latest.write().unwrap() = Some(lean);
                 Some(AgentMsg::Metrics(m))
             }
@@ -184,6 +189,7 @@ impl Registry {
             hello: RwLock::new(None),
             latest: RwLock::new(None),
             failed_services: RwLock::new(None),
+            postgres: RwLock::new(None),
             last_msg_at: AtomicU64::new(now_ms() as u64),
             shutdown: Notify::new(),
             next_id: AtomicU64::new(1),

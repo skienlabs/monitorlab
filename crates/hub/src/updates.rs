@@ -49,11 +49,59 @@ pub fn file_for(h: &AgentHello) -> Option<&'static str> {
     }
 }
 
+/// Agent binaries uploaded to the data volume win over the ones baked into the image.
+pub fn agent_path(state: &S, file: &str) -> std::path::PathBuf {
+    let uploaded = state.cfg.data_dir.join("agents").join(file);
+    if uploaded.is_file() {
+        uploaded
+    } else {
+        state.cfg.agents_dir.join(file)
+    }
+}
+
+pub const AGENT_FILES: &[&str] = &[
+    "monitorlab-agent-linux-amd64",
+    "monitorlab-agent-linux-arm64",
+    "monitorlab-agent-windows-amd64.exe",
+    "monitorlab-agent-macos-arm64",
+    "monitorlab-agent-macos-amd64",
+];
+
+fn magic_ok(file: &str, b: &[u8]) -> bool {
+    if file.contains("-macos-") {
+        b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) || b.starts_with(&[0xca, 0xfe, 0xba, 0xbe])
+    } else if file.ends_with(".exe") {
+        b.starts_with(b"MZ")
+    } else {
+        b.starts_with(b"\x7fELF")
+    }
+}
+
+/// Upload an agent binary built elsewhere (for example on a Mac). `PUT /api/agent-binaries/{file}`.
+pub async fn upload_binary(State(state): State<S>, user: AuthUser, axum::extract::Path(file): axum::extract::Path<String>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
+    user.require(rbac::SERVERS_MANAGE)?;
+    if !AGENT_FILES.contains(&file.as_str()) {
+        return Err(ApiError::bad("unknown agent file name"));
+    }
+    if body.len() < 1_000_000 || !magic_ok(&file, &body) {
+        return Err(ApiError::bad("this does not look like a valid agent binary for that platform"));
+    }
+    let dir = state.cfg.data_dir.join("agents");
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    let tmp = dir.join(format!("{file}.part"));
+    tokio::fs::write(&tmp, &body).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    tokio::fs::rename(&tmp, dir.join(&file)).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    HASHES.lock().unwrap().take();
+    let sha = hex::encode(Sha256::digest(&body));
+    audit(&state, Some(&user), "", AuditEntry { action: "settings_changed", server: None, target: Some(format!("agent binary {file}")), detail: Some(sha.clone()), ok: true }).await;
+    Ok(Json(json!({ "ok": true, "file": file, "bytes": body.len(), "sha256": sha })))
+}
+
 async fn sha256_of(state: &S, file: &str) -> Option<String> {
     if let Some(h) = HASHES.lock().unwrap().as_ref().and_then(|m| m.get(file).cloned()) {
         return Some(h);
     }
-    let bytes = tokio::fs::read(state.cfg.agents_dir.join(file)).await.ok()?;
+    let bytes = tokio::fs::read(agent_path(state, file)).await.ok()?;
     let h = hex::encode(Sha256::digest(&bytes));
     HASHES.lock().unwrap().get_or_insert_with(HashMap::new).insert(file.to_string(), h.clone());
     Some(h)

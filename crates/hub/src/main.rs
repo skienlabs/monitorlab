@@ -125,6 +125,7 @@ fn router(state: S) -> Router {
         .route("/monitors/{id}/check", post(monitors::check_now))
         .route("/monitors/{id}/results", get(monitors::results))
         .route("/agent-updates", get(updates::get_settings).put(updates::put_settings))
+        .route("/agent-binaries/{file}", put(updates::upload_binary).layer(axum::extract::DefaultBodyLimit::max(80 * 1024 * 1024)))
         .route("/servers", get(api::list_servers).post(api::create_server))
         .route("/servers/{id}", get(api::get_server).patch(api::rename_server).delete(api::delete_server))
         .route("/servers/{id}/metrics", get(api::server_metrics))

@@ -469,7 +469,7 @@ pub async fn delete_server(State(state): State<S>, user: AuthUser, Path(id): Pat
 
 pub async fn hub_info(State(state): State<S>, user: AuthUser) -> ApiResult<Json<Value>> {
     let _ = user;
-    let has = |f: &str| state.cfg.agents_dir.join(f).is_file();
+    let has = |f: &str| crate::updates::agent_path(&state, f).is_file();
     Ok(Json(json!({
         "version": monitorlab_common::VERSION,
         "tls": state.tls.is_some(),
@@ -504,7 +504,7 @@ pub async fn download(State(state): State<S>, Path(file): Path<String>) -> Respo
     if !ALLOWED.contains(&file.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = state.cfg.agents_dir.join(&file);
+    let path = crate::updates::agent_path(&state, &file);
     match tokio::fs::read(&path).await {
         Ok(bytes) => (
             [

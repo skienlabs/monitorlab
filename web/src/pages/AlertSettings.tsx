@@ -22,6 +22,7 @@ interface Rules {
   iis_stopped: boolean;
   k8s_problems: boolean;
   failed_services?: boolean;
+  postgres_problems?: boolean;
   repeat_minutes?: number;
 }
 interface Channel {
@@ -133,6 +134,7 @@ export function RulesCard({ serverId }: { serverId?: string }) {
         <label className="check"><input type="checkbox" checked={r.mssql_stopped} onChange={(e) => setR({ ...r, mssql_stopped: e.target.checked })} /> SQL Server instance stopped (critical)</label>
         <label className="check"><input type="checkbox" checked={r.iis_stopped} onChange={(e) => setR({ ...r, iis_stopped: e.target.checked })} /> IIS site or application pool stopped (warning)</label>
         <label className="check"><input type="checkbox" checked={r.k8s_problems ?? true} onChange={(e) => setR({ ...r, k8s_problems: e.target.checked })} /> Kubernetes: node not ready (critical), failing pods or degraded workloads (warning)</label>
+        <label className="check"><input type="checkbox" checked={r.postgres_problems ?? true} onChange={(e) => setR({ ...r, postgres_problems: e.target.checked })} /> PostgreSQL unreachable (critical), connections nearly exhausted or replica far behind (warning)</label>
         <label className="check"><input type="checkbox" checked={r.failed_services ?? true} onChange={(e) => setR({ ...r, failed_services: e.target.checked })} /> Failed systemd services / Windows services stopped with an error (warning)</label>
       </div>
       <div className="col" style={{ gap: 10 }}>

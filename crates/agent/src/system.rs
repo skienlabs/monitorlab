@@ -194,6 +194,7 @@ impl Collector {
         };
 
         MetricsSample {
+            postgres: None,
             ts: now_ms(),
             cpu: finite(self.cpu.global_cpu_usage()),
             cpu_cores: self.cpu.cpus().iter().map(|c| finite(c.cpu_usage())).collect(),
